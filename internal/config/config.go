@@ -8,11 +8,12 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Security SecurityConfig `yaml:"security"`
-	Update   UpdateConfig   `yaml:"update"`
-	Executor ExecutorConfig `yaml:"executor"`
+	Server    ServerConfig    `yaml:"server"`
+	Database  DatabaseConfig  `yaml:"database"`
+	Security  SecurityConfig  `yaml:"security"`
+	Update    UpdateConfig    `yaml:"update"`
+	Executor  ExecutorConfig  `yaml:"executor"`
+	Embedding EmbeddingConfig `yaml:"embedding"`
 }
 
 type ServerConfig struct {
@@ -94,15 +95,25 @@ type QueueConfig struct {
 	Address string `yaml:"address"`
 }
 
+// EmbeddingConfig 向量嵌入配置
+// 未配置时默认使用内置 TF-IDF（零依赖）
+type EmbeddingConfig struct {
+	Model      string `yaml:"model"`      // 模型名称, 空=默认 tfidf
+	ModelPath  string `yaml:"model_path"` // 模型文件路径
+	Dimension  int    `yaml:"dimension"`  // 向量维度
+	Provider   string `yaml:"provider"`   // embedding 提供者: tfidf, openai, local
+	StoreProvider string `yaml:"store"`   // vectorstore 提供者: memory, milvus, qdrant
+}
+
 func Load() *Config {
 	// Default configuration
 	cfg := &Config{
 		Server: ServerConfig{
-			Port: 8080,
+			Port: 8886,
 			Mode: "development",
 		},
 		Database: DatabaseConfig{
-			Type:        "sqlite",
+			Type:        "none",  // "none"=未配置(使用安装向导), "sqlite"=SQLite, "mysql"=MySQL, "postgres"=PostgreSQL
 			Name:        "data/wisehoof.db",
 			AutoMigrate: true,
 		},

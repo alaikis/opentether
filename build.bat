@@ -1,179 +1,122 @@
 @echo off
-REM OpenTether Build Script for Windows
-REM Usage: build.bat [platform]
-REM   platform: linux, windows, darwin, all (default: all)
-REM   Example: build.bat all
+REM ============================================
+REM  OpenTether Build Script
+REM  Step 1: Build Frontend (npm run build)
+REM  Step 2: Restore Setup Page
+REM  Step 3: Build Go Binary (embed frontend)
+REM  Usage: build.bat [all|windows|linux|darwin|dev]
+REM ============================================
 
 setlocal enabledelayedexpansion
-
-REM Configuration
 set OUTPUT_DIR=output
-set BINARY_NAME=opentether
-set STATIC_SRC=admin-ui\build
-set VERSION=1.0.0
-set BUILD_TIME=%date:~0,4%-%date:~5,2%-%date:~8,2%_%time:~0,2%:%time:~3,2%:%time:~6,2%
-set BUILD_TIME=%BUILD_TIME: =0%
-set LDFLAGS=-ldflags "-X main.version=%VERSION% -X main.buildTime=%BUILD_TIME%"
-
-set INFO=[INFO]
-set ERROR=[ERROR]
+set BIN=opentether
+set VER=1.0.0
 
 echo.
-echo %INFO% OpenTether Build Script v%VERSION%
-echo %INFO% =================================
+echo ==========================================
+echo  OpenTether Build v%VER%
+echo ==========================================
 echo.
 
-REM ========================================
-REM Step 1: Verify admin-ui exists
-REM ========================================
-echo %INFO% Step 1: Checking admin-ui/build...
+REM ============================================
+REM Step 1: Build Frontend
+REM ============================================
+echo [1/4] Building frontend...
 
-if not exist "%STATIC_SRC%" (
-    echo %ERROR% %STATIC_SRC% not found! Cannot build without admin UI.
+if exist "admin-ui\package.json" (
+    cd admin-ui
+    if not exist "node_modules" ( call npm install --silent )
+    call npm run build
+    if errorlevel 1 ( echo [ERROR] Frontend build failed & cd .. & exit /b 1 )
+    cd ..
+    echo   Frontend built: admin-ui/build/
+) else (
+    echo   [SKIP] admin-ui/package.json not found
+)
+
+if not exist "admin-ui\build\index.html" (
+    echo [ERROR] admin-ui/build/index.html not found
     exit /b 1
 )
-echo %INFO%   admin-ui/build found
-echo.
 
-REM ========================================
-REM Step 2: Get build target
-REM ========================================
+REM ============================================
+REM Step 2: Restore Setup Page
+REM ============================================
+echo [2/4] Restoring setup page...
+if exist "admin-ui\static\setup\index.html" (
+    mkdir "admin-ui\build\setup" 2>nul
+    copy /y "admin-ui\static\setup\index.html" "admin-ui\build\setup\index.html" >nul
+    echo   Setup page restored
+) else (
+    echo   [WARN] Setup page not found, using existing
+)
+
+REM ============================================
+REM Step 3: Get Target
+REM ============================================
 set TARGET=%~1
 if "%TARGET%"=="" set TARGET=all
 
-REM ========================================
-REM Step 3: Build
-REM ========================================
-call :build_%TARGET% 2>nul
-if errorlevel 1 (
-    echo %ERROR% Unknown target: %TARGET%
-    echo %ERROR% Valid targets: all, linux, windows, darwin, current, help
-    exit /b 1
-)
-goto :done
+echo [3/4] Building Go binary...
 
-:build_all
-    echo %INFO% Step 2: Building all platforms...
-    call :build_one windows amd64 .exe
-    call :build_one linux amd64
-    call :build_one darwin amd64
-    call :copy_static
-    echo.
-    echo %INFO% All builds completed!
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+
+if "%TARGET%"=="all" goto :all
+if "%TARGET%"=="windows" goto :win
+if "%TARGET%"=="linux" goto :linux
+if "%TARGET%"=="darwin" goto :darwin
+if "%TARGET%"=="dev" goto :dev
+echo [ERROR] Unknown target: %TARGET%
+echo Valid: all, windows, linux, darwin, dev
+exit /b 1
+
+:all
+    call :build windows amd64 .exe
+    call :build linux amd64
+    call :build darwin amd64
+    goto :done
+
+:win
+    call :build windows amd64 .exe
+    goto :done
+
+:linux
+    call :build linux amd64
+    goto :done
+
+:darwin
+    call :build darwin amd64
+    goto :done
+
+:dev
+    echo   Building dev mode (filesystem)...
+    go build -ldflags "-X main.version=%VER%" -o "%OUTPUT_DIR%\%BIN%-dev.exe" .\cmd
+    echo [4/4] Dev build done
+    echo   Run: %OUTPUT_DIR%\%BIN%-dev.exe
     exit /b 0
 
-:build_windows
-    echo %INFO% Step 2: Building Windows amd64...
-    call :build_one windows amd64 .exe
-    call :copy_static windows
-    exit /b 0
-
-:build_linux
-    echo %INFO% Step 2: Building Linux amd64...
-    call :build_one linux amd64
-    call :copy_static linux
-    exit /b 0
-
-:build_darwin
-    echo %INFO% Step 2: Building Darwin (macOS) amd64...
-    call :build_one darwin amd64
-    call :copy_static darwin
-    exit /b 0
-
-:build_current
-    echo %INFO% Step 2: Building for current platform...
-    for /f "delims=" %%i in ('go env GOOS') do set T_GOOS=%%i
-    for /f "delims=" %%i in ('go env GOARCH') do set T_GOARCH=%%i
-    call :build_one !T_GOOS! !T_GOARCH! .exe 2>nul
-    call :copy_static
-    exit /b 0
-
-:build_help
-    goto :show_help
-
-REM ========================================
-REM Internal: Build single platform
-REM ========================================
-:build_one
-    set TARGET_PLATFORM=%1
-    set TARGET_ARCH=%2
-    set TARGET_EXT=%3
-
-    if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
-
-    set OUT_FILE=%OUTPUT_DIR%\%BINARY_NAME%-%TARGET_PLATFORM%-%TARGET_ARCH%%TARGET_EXT%
-    echo %INFO%   Building: %OUT_FILE%
-
-    set GOOS=%TARGET_PLATFORM%
-    set GOARCH=%TARGET_ARCH%
+REM ============================================
+REM Build function
+REM ============================================
+:build
+    set OS=%1
+    set ARCH=%2
+    set EXT=%3
+    set OUT=%OUTPUT_DIR%\%BIN%-%OS%-%ARCH%%EXT%
+    echo   Building: %OUT%
+    set GOOS=%OS%
+    set GOARCH=%ARCH%
     set CGO_ENABLED=0
-    go build %LDFLAGS% -o "%OUT_FILE%" .
-    if errorlevel 1 (
-        echo %ERROR% Build failed for %TARGET_PLATFORM%/%TARGET_ARCH%
-        exit /b 1
-    )
-    echo %INFO%     Done: %OUT_FILE%
+    go build -ldflags "-X main.version=%VER%" -o "%OUT%" .
+    if errorlevel 1 ( echo [ERROR] Build failed & exit /b 1 )
     exit /b 0
 
-REM ========================================
-REM Step 4: Copy static files
-REM ========================================
-:copy_static
-    echo.
-    echo %INFO% Step 3: Copying admin-ui/build to output directory...
-
-    set STATIC_DEST=%OUTPUT_DIR%\admin-ui\build
-
-    REM Remove old static files
-    if exist "%STATIC_DEST%" rd /s /q "%STATIC_DEST%"
-
-    REM Copy admin-ui/build recursively
-    xcopy "%STATIC_SRC%" "%STATIC_DEST%" /E /I /Q /Y
-    if errorlevel 1 (
-        echo %ERROR% Failed to copy static files!
-        exit /b 1
-    )
-    echo %INFO%   Static files copied to %STATIC_DEST%
-    exit /b 0
-
-REM ========================================
-REM Done - Show output
-REM ========================================
 :done
+echo [4/4] Build complete
 echo.
-echo %INFO% Build outputs:
-dir /b "%OUTPUT_DIR%\%BINARY_NAME%*" 2>nul
+echo ==========================================
+echo  Output
+echo ==========================================
+dir /b "%OUTPUT_DIR%\%BIN%*" 2>nul
 echo.
-echo %INFO% Directory structure:
-echo %INFO%   %OUTPUT_DIR%\
-echo %INFO%     +-- %BINARY_NAME%-windows-amd64.exe
-echo %INFO%     +-- %BINARY_NAME%-linux-amd64
-echo %INFO%     +-- %BINARY_NAME%-darwin-amd64
-echo %INFO%     +-- admin-ui\build\     ^(static web files^)
-echo.
-echo %INFO% Run: cd %OUTPUT_DIR% ^&^& %BINARY_NAME%-windows-amd64.exe
-exit /b 0
-
-:show_help
-echo.
-echo OpenTether Build Script
-echo =======================
-echo.
-echo Usage: build.bat [target]
-echo.
-echo Targets:
-echo   all       - Build for all platforms + copy static files (default)
-echo   linux     - Build for Linux amd64 + copy static files
-echo   windows   - Build for Windows amd64 + copy static files
-echo   darwin    - Build for macOS amd64 + copy static files
-echo   current   - Build for current platform + copy static files
-echo   help      - Show this help
-echo.
-echo Examples:
-echo   build.bat              - Build all platforms
-echo   build.bat windows      - Build Windows only
-echo.
-echo Note: Static files (admin-ui/build) are automatically copied to
-echo       the output directory after build. Run the executable from
-echo       the output directory to serve the admin UI.
-exit /b 0
+echo  cd %OUTPUT_DIR% ^&^& %BIN%-windows-amd64.exe

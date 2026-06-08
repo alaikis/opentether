@@ -1,8 +1,7 @@
-@echo off
-setlocal enabledelayedexpansion
-
-:: OpenTether Build Script for Windows
-:: Builds both frontend and backend, embeds frontend into binary
+@echo on
+REM OpenTether Build Script for Windows
+REM Builds both frontend and backend, embeds frontend into binary
+REM Usage: build.bat [options]
 
 set "RED="
 set "GREEN="
@@ -23,7 +22,7 @@ cd /d "%PROJECT_ROOT%"
 set "BUILD_MODE=full"
 set "SKIP_FRONTEND="
 set "SKIP_BACKEND="
-set "OUTPUT_NAME=wisehoof"
+set "OUTPUT_NAME=opentether"
 
 :: Parse arguments
 :parse_args
@@ -62,25 +61,35 @@ if not defined SKIP_FRONTEND (
     if not exist "admin-ui" (
         echo Warning: admin-ui directory not found, skipping frontend build
     ) else (
-        cd admin-ui
+        :: Check if this is a Node.js project (has package.json)
+        if exist "admin-ui\package.json" (
+            cd admin-ui
 
-        :: Check if node_modules exists
-        if not exist "node_modules" (
-            echo Installing Node.js dependencies...
-            call npm install
-        )
+            :: Check if node_modules exists
+            if not exist "node_modules" (
+                echo Installing Node.js dependencies...
+                call npm install
+            )
 
-        :: Build the frontend
-        echo Running npm run build...
-        call npm run build
+            :: Build the frontend
+            echo Running npm run build...
+            call npm run build
 
-        cd /d "%PROJECT_ROOT%"
+            cd /d "%PROJECT_ROOT%"
 
-        if exist "admin-ui\build" (
-            echo Frontend built successfully!
+            if exist "admin-ui\build" (
+                echo Frontend built successfully!
+            ) else (
+                echo Error: Frontend build failed - build directory not found
+                exit /b 1
+            )
         ) else (
-            echo Error: Frontend build failed - build directory not found
-            exit /b 1
+            echo Note: admin-ui appears to be pre-built (no package.json found)
+            if exist "admin-ui\build" (
+                echo Using existing build at admin-ui\build
+            ) else (
+                echo Warning: admin-ui\build not found
+            )
         )
     )
 ) else (
@@ -143,3 +152,5 @@ if exist "output\%OUTPUT_NAME%" (
     echo Binary info:
     dir /b "output\%OUTPUT_NAME%"
 )
+
+pause

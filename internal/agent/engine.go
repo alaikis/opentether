@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/alaikis/opentether/internal/config"
+	"github.com/alaikis/opentether/internal/embedding"
 	"github.com/alaikis/opentether/internal/llm"
 	"github.com/alaikis/opentether/internal/models"
+	"github.com/alaikis/opentether/internal/text2sql"
+	"github.com/alaikis/opentether/internal/vectorstore"
 	"gorm.io/gorm"
 )
 
@@ -141,47 +146,88 @@ func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 	return ctx, nil
 }
 
-// recognizeIntent 意图识别
+// recognizeIntent 意图识别：向量语义匹配优先 → 关键词匹配兜底
+// 不做开放式 fallback，无匹配时返回 boundary_reject
 func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*IntentResult, error) {
-	// 简单的关键词匹配 + 向量匹配
-	// 在实际实现中应该使用 LLM 或向量数据库
-
 	lowerMsg := toLower(message)
 
-	// 预定义意图匹配
-	intentPatterns := map[string][]string{
-		"text2sql":     {"查询", "查询数据", "统计", "sql", "query", "搜索", "找"},
-		"chat":         {"你好", "hello", "在吗", "问下", "聊聊"},
-		"file_process": {"处理文件", "上传文件", "解析文件", "read file"},
-		"report":       {"生成报告", "报表", "导出", "report", "统计报表"},
-		"api_caller":   {"调用接口", "请求API", "http", "api call"},
-		"system":       {"系统", "设置", "配置", "system"},
+	// === 第一层：向量语义匹配（置信度阈值 0.15）===
+	vectorSkill, score, err := e.skills.MatchByVector(message, 0.15)
+	if err == nil && vectorSkill != nil && score > 0 {
+		return &IntentResult{
+			Intent:     vectorSkill.SkillType,
+			Confidence: score,
+			Entities:   extractEntities(message),
+			Parameters: map[string]interface{}{
+				"skill_name": vectorSkill.Name,
+				"skill_id":   vectorSkill.ID,
+				"match_type": "vector",
+				"score":      score,
+			},
+		}, nil
 	}
 
-	for intent, keywords := range intentPatterns {
+	// === 第二层：关键词匹配兜底 ===
+	skills, err := e.skills.ListEnabledSkills()
+	if err != nil {
+		return nil, fmt.Errorf("获取 Skill 列表失败: %w", err)
+	}
+
+	for _, skill := range skills {
+		keywords := parseKeywords(skill.Keywords)
+		keywords = append(keywords, toLower(skill.Name), toLower(skill.SkillType))
+
 		for _, kw := range keywords {
-			if contains(lowerMsg, kw) {
+			if kw != "" && contains(lowerMsg, toLower(kw)) {
 				return &IntentResult{
-					Intent:     intent,
-					Confidence: 0.9,
+					Intent:     skill.SkillType,
+					Confidence: 0.7,
 					Entities:   extractEntities(message),
-					Parameters: map[string]interface{}{},
+					Parameters: map[string]interface{}{
+						"skill_name": skill.Name,
+						"skill_id":   skill.ID,
+						"match_type": "keyword",
+					},
 				}, nil
 			}
 		}
 	}
 
-	// 默认 chat 意图
+	// 无匹配 → 边界拒绝
 	return &IntentResult{
-		Intent:     "chat",
-		Confidence: 0.5,
+		Intent:     "boundary_reject",
+		Confidence: 0,
 		Entities:   map[string]string{},
-		Parameters: map[string]interface{}{},
+		Parameters: map[string]interface{}{
+			"reason":       "no_matching_skill",
+			"user_message": message,
+		},
 	}, nil
+}
+
+// parseKeywords 解析 Skill 的关键词 JSON 数组
+func parseKeywords(keywordsJSON string) []string {
+	if keywordsJSON == "" {
+		return nil
+	}
+	var keywords []string
+	if err := json.Unmarshal([]byte(keywordsJSON), &keywords); err != nil {
+		return strings.Split(keywordsJSON, ",")
+	}
+	return keywords
 }
 
 // planExecution 规划执行
 func (e *AgentEngine) planExecution(intent *IntentResult, user *UserContext) (*PlanningResult, error) {
+	// 边界拒绝：未匹配到任何注册 Skill
+	if intent.Intent == "boundary_reject" {
+		return &PlanningResult{
+			SkillName:  "",
+			CanExecute: false,
+			Reason:     "抱歉，您的问题超出了当前系统支持的范围。请使用已注册的 Skill 进行操作。如需帮助，请联系管理员配置相关 Skill。",
+		}, nil
+	}
+
 	// 根据意图选择 Skill
 	skillMap := map[string]string{
 		"text2sql":     "skill_text2sql",
@@ -189,11 +235,25 @@ func (e *AgentEngine) planExecution(intent *IntentResult, user *UserContext) (*P
 		"file_process": "skill_file_process",
 		"report":       "skill_report",
 		"api_caller":   "skill_api_caller",
+		"employee":     "skill_employee",
+		"pdf":          "skill_pdf",
+		"md2pdf":       "skill_md2pdf",
 	}
 
 	skillName := skillMap[intent.Intent]
 	if skillName == "" {
-		skillName = "skill_chat"
+		// 直接从 intent 提取 skill_name
+		if name, ok := intent.Parameters["skill_name"].(string); ok {
+			skillName = name
+		}
+	}
+
+	if skillName == "" {
+		return &PlanningResult{
+			SkillName:  "",
+			CanExecute: false,
+			Reason:     "无法识别对应的 Skill，请联系管理员。",
+		}, nil
 	}
 
 	// 检查权限
@@ -259,6 +319,15 @@ func (e *AgentEngine) executePlan(plan *PlanningResult, req *ChatRequest, user *
 			response.Data = result.Data
 		}
 
+	case "skill_employee":
+		result, err := e.executeEmployee(req.Message, user)
+		if err != nil {
+			response.Message = fmt.Sprintf("员工查询失败: %v", err)
+		} else {
+			response.Message = result.Message
+			response.Data = result.Data
+		}
+
 	case "skill_chat":
 		result, err := e.executeChat(req.Message, user)
 		if err != nil {
@@ -276,6 +345,24 @@ func (e *AgentEngine) executePlan(plan *PlanningResult, req *ChatRequest, user *
 			response.Data = result.Data
 		}
 
+	case "skill_pdf":
+		result, err := e.executePDFReport(req.Message, user)
+		if err != nil {
+			response.Message = fmt.Sprintf("PDF生成失败: %v", err)
+		} else {
+			response.Message = result.Message
+			response.Data = result.Data
+		}
+
+	case "skill_md2pdf":
+		result, err := e.executeMD2PDF(req.Message, user)
+		if err != nil {
+			response.Message = fmt.Sprintf("Markdown转PDF失败: %v", err)
+		} else {
+			response.Message = result.Message
+			response.Data = result.Data
+		}
+
 	default:
 		// 默认 chat
 		result, _ := e.executeChat(req.Message, user)
@@ -286,13 +373,305 @@ func (e *AgentEngine) executePlan(plan *PlanningResult, req *ChatRequest, user *
 }
 
 func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatResponse, error) {
+	// 从用户上下文获取数据源配置
+	dataSourceID := ""
+	if user.Context != nil {
+		if ds, ok := user.Context["data_source_id"].(string); ok {
+			dataSourceID = ds
+		}
+	}
+
+	// 如果没有指定数据源，尝试获取第一个启用的数据源
+	if dataSourceID == "" {
+		var ds models.DataSource
+		err := e.db.Where("enabled = ?", true).First(&ds).Error
+		if err != nil {
+			return &ChatResponse{
+				Message: "请先在管理后台配置数据源后再使用查询功能",
+				Data: map[string]interface{}{
+					"type":    "text2sql",
+					"action":  "configure_datasource",
+					"message": "未配置数据源，请先在数据源管理中添加数据库连接",
+				},
+			}, nil
+		}
+		dataSourceID = ds.ID
+		}
+
+		// 获取活跃的 LLM Provider
+		provider, err := e.providers.GetActiveProvider()
+		if err != nil || provider == nil {
+			return &ChatResponse{
+				Message: "请先在管理后台配置 LLM Provider 后再使用查询功能",
+				Data: map[string]interface{}{
+					"type":    "text2sql",
+					"action":  "configure_provider",
+					"message": "未配置 LLM Provider，请先在 Provider 管理中添加配置",
+				},
+			}, nil
+		}
+
+		// 创建 LLM Client
+		client, err := llm.NewClient(provider)
+		if err != nil {
+			return &ChatResponse{
+				Message: fmt.Sprintf("创建 LLM 客户端失败: %v", err),
+				Data: map[string]interface{}{
+					"type":  "text2sql",
+					"error": err.Error(),
+				},
+			}, nil
+		}
+
+		// 创建 Text2SQL 实例
+		t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("连接数据源失败: %v", err),
+			Data: map[string]interface{}{
+				"type":  "text2sql",
+				"error": err.Error(),
+			},
+		}, nil
+	}
+	defer t2s.Close()
+
+	// 执行查询
+	req := &text2sql.QueryRequest{
+		Question:     message,
+		DataSourceID: dataSourceID,
+	}
+
+	result, err := t2s.ExecuteSQL(context.Background(), req)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("查询失败: %v", err),
+		}, nil
+	}
+
+	if result.Error != "" {
+		return &ChatResponse{
+			Message: result.Error,
+			Data: map[string]interface{}{
+				"type":   "text2sql",
+				"error":  result.Error,
+				"sql":    result.SQL,
+				"status": "failed",
+			},
+		}, nil
+	}
+
+	// 格式化结果
+	responseMessage := formatQueryResult(result)
+
 	return &ChatResponse{
-		Message: "Text2SQL 功能需要配置数据源后使用",
+		Message: responseMessage,
 		Data: map[string]interface{}{
-			"type":    "text2sql",
-			"message": "请在管理后台配置数据源后再使用此功能",
+			"type":          "text2sql",
+			"sql":           result.SQL,
+			"columns":       result.Columns,
+			"rows":          result.Rows,
+			"row_count":     result.RowCount,
+			"execution_time": result.ExecutionTime,
+			"data_source_id": dataSourceID,
 		},
+		SkillUsed: "skill_text2sql",
 	}, nil
+}
+
+// executeEmployee 处理员工查询
+func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatResponse, error) {
+	// 员工查询使用特殊的 prompt 和数据源
+	// 首先尝试找到 HR/员工数据相关的数据源
+	dataSourceID := ""
+
+	// 从用户上下文获取数据源，或者查找名为 "hr" 或 "employee" 的数据源
+	if user.Context != nil {
+		if ds, ok := user.Context["employee_data_source_id"].(string); ok {
+			dataSourceID = ds
+		}
+	}
+
+	// 如果没有指定，尝试查找相关数据源
+	if dataSourceID == "" {
+		var ds models.DataSource
+		err := e.db.Where("enabled = ? AND (name LIKE ? OR name LIKE ?)", true, "%hr%", "%员工%").First(&ds).Error
+		if err != nil {
+			// 尝试获取第一个启用的数据源
+			err = e.db.Where("enabled = ?", true).First(&ds).Error
+			if err != nil {
+				return &ChatResponse{
+					Message: "请先在管理后台配置员工数据源后再使用员工查询功能",
+					Data: map[string]interface{}{
+						"type":    "employee",
+						"action":  "configure_datasource",
+						"message": "未配置员工数据源，请先在数据源管理中添加数据库连接",
+					},
+				}, nil
+			}
+		}
+		dataSourceID = ds.ID
+	}
+
+	// 获取活跃的 LLM Provider
+	provider, err := e.providers.GetActiveProvider()
+	if err != nil || provider == nil {
+		return &ChatResponse{
+			Message: "请先在管理后台配置 LLM Provider 后再使用查询功能",
+			Data: map[string]interface{}{
+				"type":    "text2sql",
+				"action":  "configure_provider",
+				"message": "未配置 LLM Provider，请先在 Provider 管理中添加配置",
+			},
+		}, nil
+	}
+
+	// 创建 LLM Client
+	client, err := llm.NewClient(provider)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("创建 LLM 客户端失败: %v", err),
+			Data: map[string]interface{}{
+				"type":  "text2sql",
+				"error": err.Error(),
+			},
+		}, nil
+	}
+
+	// 创建 Text2SQL 实例
+	t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("连接数据源失败: %v", err),
+			Data: map[string]interface{}{
+				"type":  "employee",
+				"error": err.Error(),
+			},
+		}, nil
+	}
+	defer t2s.Close()
+
+	// 为员工查询构建特殊的 prompt
+	req := &text2sql.QueryRequest{
+		Question:     message,
+		DataSourceID: dataSourceID,
+	}
+
+	result, err := t2s.ExecuteSQL(context.Background(), req)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("员工查询失败: %v", err),
+		}, nil
+	}
+
+	if result.Error != "" {
+		return &ChatResponse{
+			Message: result.Error,
+			Data: map[string]interface{}{
+				"type":   "employee",
+				"error":  result.Error,
+				"sql":    result.SQL,
+				"status": "failed",
+			},
+		}, nil
+	}
+
+	// 格式化结果，优先显示员工相关的列
+	responseMessage := formatEmployeeResult(result)
+
+	return &ChatResponse{
+		Message: responseMessage,
+		Data: map[string]interface{}{
+			"type":          "employee",
+			"sql":           result.SQL,
+			"columns":       result.Columns,
+			"rows":          result.Rows,
+			"row_count":     result.RowCount,
+			"execution_time": result.ExecutionTime,
+			"data_source_id": dataSourceID,
+		},
+		SkillUsed: "skill_employee",
+	}, nil
+}
+
+// formatQueryResult 格式化查询结果为可读文本
+func formatQueryResult(result *text2sql.QueryResult) string {
+	if result.Error != "" {
+		return result.Error
+	}
+
+	if result.RowCount == 0 {
+		return "查询完成，未找到相关数据"
+	}
+
+	var output string
+	output += fmt.Sprintf("查询完成，共找到 %d 条记录\n\n", result.RowCount)
+
+	// 显示前10条
+	maxRows := result.RowCount
+	if maxRows > 10 {
+		maxRows = 10
+		output += "(仅显示前10条)\n\n"
+	}
+
+	for i := 0; i < maxRows; i++ {
+		var rowStr []string
+		for j, col := range result.Columns {
+			rowStr = append(rowStr, fmt.Sprintf("%s: %v", col, result.Rows[i][j]))
+		}
+		output += fmt.Sprintf("%d. %s\n", i+1, strings.Join(rowStr, ", "))
+	}
+
+	return output
+}
+
+// formatEmployeeResult 格式化员工查询结果
+func formatEmployeeResult(result *text2sql.QueryResult) string {
+	if result.Error != "" {
+		return result.Error
+	}
+
+	if result.RowCount == 0 {
+		return "查询完成，未找到相关员工数据"
+	}
+
+	var output string
+	output += fmt.Sprintf("查询完成，共找到 %d 条员工记录\n\n", result.RowCount)
+
+	// 查找员工姓名列（常见的列名）
+	nameColIdx := -1
+	for i, col := range result.Columns {
+		lowerCol := strings.ToLower(col)
+		if strings.Contains(lowerCol, "name") || strings.Contains(lowerCol, "姓名") || strings.Contains(lowerCol, "员工") {
+			nameColIdx = i
+			break
+		}
+	}
+
+	// 显示前10条
+	maxRows := result.RowCount
+	if maxRows > 10 {
+		maxRows = 10
+		output += "(仅显示前10条)\n\n"
+	}
+
+	for i := 0; i < maxRows; i++ {
+		if nameColIdx >= 0 && nameColIdx < len(result.Rows[i]) {
+			output += fmt.Sprintf("%d. %v\n", i+1, result.Rows[i][nameColIdx])
+		} else {
+			var rowStr []string
+			for j, col := range result.Columns {
+				if j < len(result.Rows[i]) {
+					rowStr = append(rowStr, fmt.Sprintf("%s: %v", col, result.Rows[i][j]))
+				}
+			}
+			output += fmt.Sprintf("%d. %s\n", i+1, strings.Join(rowStr, ", "))
+		}
+	}
+
+	output += fmt.Sprintf("\n执行时间: %s", result.ExecutionTime)
+
+	return output
 }
 
 func (e *AgentEngine) executeChat(message string, user *UserContext) (*ChatResponse, error) {
@@ -336,6 +715,161 @@ func (e *AgentEngine) executeReport(message string, user *UserContext) (*ChatRes
 	}, nil
 }
 
+// executePDFReport 执行 PDF 报表生成
+func (e *AgentEngine) executePDFReport(message string, user *UserContext) (*ChatResponse, error) {
+	// 从用户上下文获取查询数据
+	dataSourceID := ""
+	if user.Context != nil {
+		if ds, ok := user.Context["data_source_id"].(string); ok {
+			dataSourceID = ds
+		}
+	}
+
+	// 如果没有指定数据源，尝试获取第一个启用的数据源
+	if dataSourceID == "" {
+		var ds models.DataSource
+		err := e.db.Where("enabled = ?", true).First(&ds).Error
+		if err != nil {
+			return &ChatResponse{
+				Message: "请先在管理后台配置数据源后再使用 PDF 报表功能",
+				Data: map[string]interface{}{
+					"type":   "pdf",
+					"action": "configure_datasource",
+				},
+			}, nil
+		}
+		dataSourceID = ds.ID
+	}
+
+	// 获取活跃的 LLM Provider
+	provider, err := e.providers.GetActiveProvider()
+	if err != nil || provider == nil {
+		return &ChatResponse{
+			Message: "请先在管理后台配置 LLM Provider 后再使用报表功能",
+			Data: map[string]interface{}{
+				"type":   "pdf",
+				"action": "configure_provider",
+			},
+		}, nil
+	}
+
+	// 创建 LLM Client
+	client, err := llm.NewClient(provider)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("创建 LLM 客户端失败: %v", err),
+			Data: map[string]interface{}{
+				"type":  "pdf",
+				"error": err.Error(),
+			},
+		}, nil
+	}
+
+	// 使用 text2sql 获取数据
+	t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("连接数据源失败: %v", err),
+		}, nil
+	}
+	defer t2s.Close()
+
+	// 构建查询 - 尝试从 message 中提取查询意图
+	queryMessage := message
+	// 如果用户没有明确指定查询，构建一个默认查询
+	if !contains(toLower(message), "查询") && !contains(toLower(message), "select") {
+		queryMessage = message + " 相关数据"
+	}
+
+	req := &text2sql.QueryRequest{
+		Question:     queryMessage,
+		DataSourceID: dataSourceID,
+	}
+
+	result, err := t2s.ExecuteSQL(context.Background(), req)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("查询失败: %v", err),
+		}, nil
+	}
+
+	if result.Error != "" {
+		return &ChatResponse{
+			Message: result.Error,
+		}, nil
+	}
+
+	// 生成 PDF (需要使用 PDFService，但这需要单独的实例)
+	// 这里我们返回数据，让用户可以下载为 PDF
+	message = fmt.Sprintf("已查询到 %d 条数据，正在生成 PDF 报表...", result.RowCount)
+
+	return &ChatResponse{
+		Message: message,
+		Data: map[string]interface{}{
+			"type":           "pdf",
+			"sql":            result.SQL,
+			"columns":        result.Columns,
+			"rows":           result.Rows,
+			"row_count":      result.RowCount,
+			"data_source_id": dataSourceID,
+			"action":         "generate_pdf",
+			"api_endpoint":   "/api/v1/admin/reports/query-pdf",
+		},
+		SkillUsed: "skill_pdf",
+	}, nil
+}
+
+// executeMD2PDF 执行 Markdown 转 PDF
+func (e *AgentEngine) executeMD2PDF(message string, user *UserContext) (*ChatResponse, error) {
+	// Markdown 转 PDF 需要用户提供 Markdown 内容
+	// 这个功能主要用于转换用户提供的文档内容
+
+	// 尝试从消息中提取 markdown 内容的标记
+	var markdownContent string
+
+	// 检查是否有 markdown 代码块
+	markdownBlock := extractMarkdownBlock(message)
+	if markdownBlock != "" {
+		markdownContent = markdownBlock
+	} else {
+		// 如果没有代码块，假设整个消息就是 markdown 内容
+		markdownContent = message
+	}
+
+	// 生成 PDF (需要使用 MarkdownPDFService)
+	// 由于 AgentEngine 现在没有 MarkdownPDFService，我们需要返回数据让前端处理
+	message = "正在将 Markdown 内容转换为 PDF..."
+
+	return &ChatResponse{
+		Message: message,
+		Data: map[string]interface{}{
+			"type":   "md2pdf",
+			"markdown": markdownContent,
+			"action": "convert_to_pdf",
+			"api_endpoint": "/api/v1/admin/docs/md2pdf",
+		},
+		SkillUsed: "skill_md2pdf",
+	}, nil
+}
+
+// extractMarkdownBlock 从消息中提取 markdown 代码块内容
+func extractMarkdownBlock(message string) string {
+	// 匹配 ```markdown 或 ``` 包裹的内容
+	patterns := []string{
+		"(?s)```markdown\\s*(.+?)```,",
+		"(?s)```md\\s*(.+?)```,",
+		"(?s)```\\s*(.+?)```,",
+	}
+
+	for _, pattern := range patterns {
+		if match := regexp.MustCompile(pattern).FindStringSubmatch(message); len(match) > 1 {
+			return strings.TrimSpace(match[1])
+		}
+	}
+
+	return ""
+}
+
 // UserContext 用户上下文
 type UserContext struct {
 	UserID          string
@@ -345,6 +879,7 @@ type UserContext struct {
 	Status          string
 	Groups          []GroupContext
 	AvailableSkills []string
+	Context         map[string]interface{}  // 额外的上下文数据
 }
 
 func (u *UserContext) getGroupIDs() []string {
@@ -446,17 +981,149 @@ func (m *ProviderManager) CallLLM(ctx context.Context, provider *models.Provider
 
 // SkillManager Skills 管理
 type SkillManager struct {
-	db *gorm.DB
+	db         *gorm.DB
+	embedder   embedding.Embedder
+	store      vectorstore.Store
 }
 
 func NewSkillManager(db *gorm.DB) *SkillManager {
-	return &SkillManager{db: db}
+	sm := &SkillManager{db: db}
+	// 延迟初始化，由外部调用 InitVector
+	return sm
+}
+
+// InitVector 初始化向量层（加载配置 → 创建 Embedder → 构建索引）
+func (m *SkillManager) InitVector(vc VectorConfig) error {
+	skills, err := m.ListEnabledSkills()
+	if err != nil || len(skills) == 0 {
+		return err
+	}
+
+	// 构建语料库
+	docs := make([]string, len(skills))
+	for i, s := range skills {
+		docs[i] = s.Name + " " + s.Description + " " + s.Keywords
+	}
+
+	// 创建 Embedder
+	m.embedder, err = NewEmbedder(vc, docs)
+	if err != nil {
+		return fmt.Errorf("创建 Embedder 失败: %w", err)
+	}
+
+	// 创建 VectorStore
+	m.store, err = NewVectorStore(vc)
+	if err != nil {
+		return fmt.Errorf("创建 VectorStore 失败: %w", err)
+	}
+
+	// 加载已有向量到 Store
+	loaded := 0
+	for _, skill := range skills {
+		if skill.VectorEnabled && len(skill.VectorIndex) > 0 {
+			if vec, err := DecodeVector(skill.VectorIndex); err == nil {
+				m.store.Index(skill.ID, skill.Name, vec)
+				loaded++
+			}
+		}
+	}
+
+	if loaded == 0 {
+		// 索引为空，触发首次全量同步
+		return m.SyncVector()
+	}
+
+	return nil
 }
 
 func (m *SkillManager) GetSkill(name string) (*models.Skill, error) {
 	var skill models.Skill
 	err := m.db.Where("name = ? AND enabled = ?", name, true).First(&skill).Error
 	return &skill, err
+}
+
+// ListEnabledSkills 获取所有启用的 Skill
+func (m *SkillManager) ListEnabledSkills() ([]models.Skill, error) {
+	var skills []models.Skill
+	err := m.db.Where("enabled = ?", true).Find(&skills).Error
+	return skills, err
+}
+
+// SyncVector 同步所有 Skill 的向量索引（全量重建）
+func (m *SkillManager) SyncVector() error {
+	skills, err := m.ListEnabledSkills()
+	if err != nil {
+		return fmt.Errorf("获取 Skill 列表失败: %w", err)
+	}
+
+	if m.embedder == nil || m.store == nil {
+		return fmt.Errorf("向量层未初始化，请先调用 InitVector")
+	}
+
+	// 清空旧索引
+	m.store.Clear()
+
+	// 重建词表（TF-IDF 需要）
+	docs := make([]string, len(skills))
+	for i, s := range skills {
+		docs[i] = s.Name + " " + s.Description + " " + s.Keywords
+	}
+	if tfidf, ok := m.embedder.(*embedding.TFIDFEmbedder); ok {
+		tfidf.BuildVocabulary(docs)
+	}
+
+	// 计算向量并存储
+	for _, skill := range skills {
+		doc := skill.Name + " " + skill.Description + " " + skill.Keywords
+		vec, err := m.embedder.Embed(doc)
+		if err != nil {
+			return fmt.Errorf("向量化失败 [%s]: %w", skill.Name, err)
+		}
+
+		encoded := EncodeVector(vec)
+		if err := m.db.Model(&skill).Updates(map[string]interface{}{
+			"vector_index":   encoded,
+			"vector_enabled": true,
+		}).Error; err != nil {
+			return fmt.Errorf("存储向量失败 [%s]: %w", skill.Name, err)
+		}
+
+		m.store.Index(skill.ID, skill.Name, vec)
+	}
+
+	return nil
+}
+
+// MatchByVector 向量匹配：使用 Embedder + VectorStore 搜索最佳匹配
+func (m *SkillManager) MatchByVector(message string, threshold float64) (*models.Skill, float64, error) {
+	if m.embedder == nil || m.store == nil || m.store.Count() == 0 {
+		return nil, 0, nil
+	}
+
+	// 向量化用户消息
+	queryVec, err := m.embedder.Embed(message)
+	if err != nil {
+		return nil, 0, fmt.Errorf("向量化消息失败: %w", err)
+	}
+
+	// 搜索最佳匹配
+	matches, err := m.store.Search(queryVec, 1, threshold)
+	if err != nil || len(matches) == 0 {
+		return nil, 0, nil
+	}
+
+	// 从数据库加载 Skill 详情
+	var skill models.Skill
+	if err := m.db.Where("id = ?", matches[0].SkillID).First(&skill).Error; err != nil {
+		return nil, 0, nil
+	}
+
+	return &skill, matches[0].Score, nil
+}
+
+// VectorStore 返回底层 VectorStore（供外部使用）
+func (m *SkillManager) VectorStore() vectorstore.Store {
+	return m.store
 }
 
 // MemoryManager 记忆管理

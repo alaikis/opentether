@@ -4,7 +4,9 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -73,8 +75,10 @@ func main() {
 	// CORS
 	app.Use(middleware.CORS(cfg.Security.CORS))
 
-	// Setup routes
-	router.Setup(app, handlers, cfg, adminUI, db)
+	// Setup routes (embedded mode - binary contains admin-ui/build)
+	// 创建子文件系统，根路径指向 admin-ui/build/
+	subFS, _ := fs.Sub(adminUI, "admin-ui/build")
+	router.Setup(app, handlers, cfg, http.FS(subFS), db, true)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/alaikis/opentether/internal/database"
 	"github.com/alaikis/opentether/internal/llm"
 	"github.com/alaikis/opentether/internal/models"
 	"gorm.io/gorm"
@@ -13,8 +15,10 @@ import (
 
 // Text2SQL converts natural language to SQL queries
 type Text2SQL struct {
-	db        *gorm.DB
-	llmClient llm.Client
+	db           *gorm.DB
+	llmClient    llm.Client
+	externalDB   *sql.DB       // 外部数据库连接
+	dataSourceID string        // 当前使用的数据源ID
 }
 
 // New creates a new Text2SQL instance
@@ -22,6 +26,57 @@ func New(db *gorm.DB, llmClient llm.Client) *Text2SQL {
 	return &Text2SQL{
 		db:        db,
 		llmClient: llmClient,
+	}
+}
+
+// NewWithDataSource creates a new Text2SQL instance with a data source
+func NewWithDataSource(db *gorm.DB, llmClient llm.Client, dataSourceID string) (*Text2SQL, error) {
+	t2s := &Text2SQL{
+		db:           db,
+		llmClient:    llmClient,
+		dataSourceID: dataSourceID,
+	}
+
+	// 如果提供了数据源ID，尝试连接
+	if dataSourceID != "" {
+		if err := t2s.connectToDataSource(dataSourceID); err != nil {
+			return nil, err
+		}
+	}
+
+	return t2s, nil
+}
+
+// connectToDataSource 连接到指定的数据源
+func (t *Text2SQL) connectToDataSource(dataSourceID string) error {
+	var ds models.DataSource
+	if err := t.db.First(&ds, dataSourceID).Error; err != nil {
+		return fmt.Errorf("数据源不存在: %w", err)
+	}
+
+	cfg := database.ExternalDBConfig{
+		Host:     ds.Host,
+		Port:     ds.Port,
+		User:     ds.User,
+		Password: ds.Password,
+		Database: ds.Database,
+		Type:     ds.SourceType,
+	}
+
+	db, err := database.Connect(cfg)
+	if err != nil {
+		return fmt.Errorf("连接数据源失败: %w", err)
+	}
+
+	t.externalDB = db
+	t.dataSourceID = dataSourceID
+	return nil
+}
+
+// Close 关闭外部数据库连接
+func (t *Text2SQL) Close() {
+	if t.externalDB != nil {
+		t.externalDB.Close()
 	}
 }
 
@@ -84,15 +139,38 @@ func (t *Text2SQL) GenerateSQL(ctx context.Context, req *QueryRequest) (*QueryRe
 
 // ExecuteSQL executes a SQL query and returns results
 func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryResult, error) {
-	// First generate SQL
-	result, err := t.GenerateSQL(ctx, req)
-	if err != nil {
-		return result, err
+	startTime := time.Now()
+
+	result := &QueryResult{
+		Question: req.Question,
 	}
 
-	if result.Error != "" {
-		return result, nil
+	// 如果没有外部连接，尝试连接
+	if t.externalDB == nil && req.DataSourceID != "" {
+		if err := t.connectToDataSource(req.DataSourceID); err != nil {
+			result.Error = fmt.Sprintf("连接数据源失败: %v", err)
+			return result, err
+		}
 	}
+
+	// 检查是否有外部数据库连接
+	if t.externalDB == nil {
+		result.Error = "未配置数据源，请先配置数据源后再执行查询"
+		return result, fmt.Errorf(result.Error)
+	}
+
+	// First generate SQL
+	genResult, err := t.GenerateSQL(ctx, req)
+	if err != nil {
+		return genResult, err
+	}
+
+	if genResult.Error != "" {
+		return genResult, nil
+	}
+
+	// Use the generated SQL
+	result.SQL = genResult.SQL
 
 	// Execute the SQL
 	if strings.TrimSpace(result.SQL) == "" {
@@ -100,8 +178,15 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 		return result, nil
 	}
 
-	// Try to execute the query
-	rows, err := t.db.Raw(result.SQL).Rows()
+	// 检查是否为危险SQL（DDL操作）
+	upperSQL := strings.ToUpper(result.SQL)
+	if strings.Contains(upperSQL, "DROP") || strings.Contains(upperSQL, "DELETE") || strings.Contains(upperSQL, "TRUNCATE") || strings.Contains(upperSQL, "ALTER") {
+		result.Error = "不允许执行数据修改或表结构修改操作，仅支持 SELECT 查询"
+		return result, nil
+	}
+
+	// Try to execute the query on external database
+	rows, err := t.externalDB.QueryContext(ctx, result.SQL)
 	if err != nil {
 		result.Error = fmt.Sprintf("SQL 执行失败: %v", err)
 		return result, nil
@@ -132,6 +217,7 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 	}
 
 	result.RowCount = len(result.Rows)
+	result.ExecutionTime = time.Since(startTime).String()
 
 	return result, nil
 }
@@ -143,23 +229,34 @@ func (t *Text2SQL) GetDataSourceSchema(dataSourceID string) (string, error) {
 		return "", err
 	}
 
-	// If schema info is stored, return it
-	if ds.SchemaInfo != "" {
+	// If schema info is stored and valid, return it (avoid loop)
+	if ds.SchemaInfo != "" && !strings.Contains(ds.SchemaInfo, "表结构分析中") {
 		return ds.SchemaInfo, nil
 	}
 
-	// Otherwise, need to connect and get schema
+	// Otherwise, connect and get schema
 	return t.fetchSchemaFromConnection(ds)
 }
 
 // fetchSchemaFromConnection connects to the database and fetches schema
 func (t *Text2SQL) fetchSchemaFromConnection(ds models.DataSource) (string, error) {
-	// This would connect to the actual database and get schema
-	// For now, return a simplified schema description
-	return fmt.Sprintf(`Database: %s
-Type: %s
-Note: Schema information not available. Please configure schema manually.`,
-		ds.Name, ds.SourceType), nil
+	cfg := database.ExternalDBConfig{
+		Host:     ds.Host,
+		Port:     ds.Port,
+		User:     ds.User,
+		Password: ds.Password,
+		Database: ds.Database,
+		Type:     ds.SourceType,
+	}
+
+	// 获取表结构
+	tables, err := database.GetSchema(cfg)
+	if err != nil {
+		return fmt.Sprintf(`数据库: %s\n类型: %s\n错误: %v`, ds.Name, ds.SourceType, err), nil
+	}
+
+	// 生成 schema 描述
+	return database.GenerateSchemaJSON(tables), nil
 }
 
 // buildPrompt builds the prompt for LLM to generate SQL
@@ -194,10 +291,23 @@ func (t *Text2SQL) TestConnection(dataSourceID string) error {
 		return fmt.Errorf("数据源不存在: %w", err)
 	}
 
-	// Try a simple query to test connection
-	tx := t.db.Raw("SELECT 1")
-	if tx.Error != nil {
-		return fmt.Errorf("连接测试失败: %w", tx.Error)
+	cfg := database.ExternalDBConfig{
+		Host:     ds.Host,
+		Port:     ds.Port,
+		User:     ds.User,
+		Password: ds.Password,
+		Database: ds.Database,
+		Type:     ds.SourceType,
+	}
+
+	// 使用 database 包测试连接
+	result, err := database.TestConnection(cfg)
+	if err != nil {
+		return err
+	}
+
+	if !result["success"].(bool) {
+		return fmt.Errorf(result["message"].(string))
 	}
 
 	return nil
@@ -210,14 +320,50 @@ func (t *Text2SQL) AnalyzeDataSource(dataSourceID string) (map[string]interface{
 		return nil, err
 	}
 
-	// For now, return basic info
-	// In a full implementation, this would actually connect and analyze
+	cfg := database.ExternalDBConfig{
+		Host:     ds.Host,
+		Port:     ds.Port,
+		User:     ds.User,
+		Password: ds.Password,
+		Database: ds.Database,
+		Type:     ds.SourceType,
+	}
+
+	// 获取表结构
+	tables, err := database.GetSchema(cfg)
+	if err != nil {
+		return map[string]interface{}{
+			"name":   ds.Name,
+			"type":   ds.SourceType,
+			"status": "error",
+			"error":  err.Error(),
+		}, nil
+	}
+
+	// 获取表关系
+	relations, _ := database.GetTableRelations(cfg)
+
+	// 生成 schema JSON
+	schemaJSON := database.GenerateSchemaJSON(tables)
+
+	// 更新数据源的 SchemaInfo
+	t.db.Model(&ds).Update("SchemaInfo", schemaJSON)
+
+	// 保存表关系到数据源
+	relationsJSON := "[]"
+	if len(relations) > 0 {
+		relationsJSON = "[TODO: convert relations to JSON]"
+	}
+	t.db.Model(&ds).Update("TableRelations", relationsJSON)
+
 	result := map[string]interface{}{
-		"name":         ds.Name,
-		"type":         ds.SourceType,
-		"status":       "analyzed",
-		"tables":       []string{}, // Would list actual tables
-		"schema_info":  ds.SchemaInfo,
+		"name":            ds.Name,
+		"type":            ds.SourceType,
+		"status":          "success",
+		"tables":          tables,
+		"table_count":     len(tables),
+		"schema_info":     schemaJSON,
+		"table_relations": relations,
 	}
 
 	return result, nil
@@ -225,14 +371,49 @@ func (t *Text2SQL) AnalyzeDataSource(dataSourceID string) (map[string]interface{
 
 // OpenDB opens a connection to the data source and returns a sql.DB
 func (t *Text2SQL) OpenDB(dataSource *models.DataSource) (*sql.DB, error) {
-	// This would create a real database connection based on the data source type
-	// For now, return an error as this requires proper implementation
-	return nil, fmt.Errorf("database connection not implemented - need to implement based on SourceType")
+	cfg := database.ExternalDBConfig{
+		Host:     dataSource.Host,
+		Port:     dataSource.Port,
+		User:     dataSource.User,
+		Password: dataSource.Password,
+		Database: dataSource.Database,
+		Type:     dataSource.SourceType,
+	}
+
+	return database.Connect(cfg)
 }
 
 // GetTableInfo returns information about tables in the data source
 func (t *Text2SQL) GetTableInfo(dataSourceID string) ([]map[string]string, error) {
-	// This would query the database for table information
-	// For now, return empty
-	return []map[string]string{}, nil
+	var ds models.DataSource
+	if err := t.db.First(&ds, dataSourceID).Error; err != nil {
+		return nil, err
+	}
+
+	cfg := database.ExternalDBConfig{
+		Host:     ds.Host,
+		Port:     ds.Port,
+		User:     ds.User,
+		Password: ds.Password,
+		Database: ds.Database,
+		Type:     ds.SourceType,
+	}
+
+	// 获取表结构
+	tables, err := database.GetSchema(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为 []map[string]string 格式
+	var result []map[string]string
+	for _, table := range tables {
+		tableInfo := map[string]string{
+			"name":    table.Name,
+			"columns": fmt.Sprintf("%d", len(table.Columns)),
+		}
+		result = append(result, tableInfo)
+	}
+
+	return result, nil
 }

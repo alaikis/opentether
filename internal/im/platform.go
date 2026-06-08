@@ -60,6 +60,8 @@ func PlatformFromString(s string) (Platform, error) {
 		return PlatformDingTalk, nil
 	case "whatsapp", "whats app":
 		return PlatformWhatsApp, nil
+	case "ilink", "ilinkai", "wechat_oa":
+		return PlatformWeCom, nil // iLink 复用微信公众号协议
 	default:
 		return PlatformUnknown, errors.New("unknown platform: " + s)
 	}
@@ -107,6 +109,10 @@ func NewPlatformHandler(config *models.ImConfig) (PlatformHandler, error) {
 
 	switch platform {
 	case PlatformWeCom:
+		// iLink 和企微共用微信协议，根据 Config 中的 platform 字段区分
+		if config.Platform == "ilink" || config.Platform == "ilinkai" || config.Platform == "wechat_oa" {
+			return NewILinkAI(config), nil
+		}
 		return NewWeChatWork(config), nil
 	case PlatformFeishu:
 		return NewFeishu(config), nil
@@ -126,6 +132,7 @@ func PlatformNames() []string {
 		"feishu",
 		"dingtalk",
 		"whatsapp",
+		"ilink",
 	}
 }
 

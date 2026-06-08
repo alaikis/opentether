@@ -2,12 +2,12 @@
 
 # Server Configuration
 server:
-  port: 8080
+  port: 8886
   mode: "development" # development, production
 
 # Database Configuration
 database:
-  type: "sqlite" # sqlite, mysql, postgres
+  type: "none" # none=未配置(使用安装向导), sqlite, mysql, postgres
   name: "data/opentether.db"
   auto_migrate: true
 
@@ -58,7 +58,7 @@ security:
 update:
   enabled: false
   check_interval: "24h"
-  github_repo: "company/opentether"
+  github_repo: "alaikis/opentether"
   auto_backup: true
   require_approval: true
 
@@ -85,10 +85,14 @@ logging:
   compress: true
 
 # Embedding Model Configuration
+# 不配置时默认使用内置 TF-IDF（零外部依赖）
+# 可选: provider: "openai" | store: "milvus"
 embedding:
-  model: "bge-m3"
+  provider: "tfidf" # tfidf(默认), openai, local
+  model: "bge-m3" # 仅 openai/local 模式使用
   model_path: "./models/embedding/"
   dimension: 1024
+  store: "memory" # memory(默认), milvus, qdrant
 
 # Admin Panel Configuration
 admin:

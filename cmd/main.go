@@ -75,8 +75,8 @@ func main() {
 	// CORS
 	app.Use(middleware.CORS(cfg.Security.CORS))
 
-	// Setup routes (adminUI is empty, router will use filesystem mode)
-	router.Setup(app, handlers, cfg, adminUI, db)
+	// Setup routes (filesystem mode - admin-ui/build must exist on disk)
+	router.Setup(app, handlers, cfg, nil, db, false)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

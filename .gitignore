@@ -8,6 +8,10 @@ admin-ui/build
 
 # Dependencies
 vendor/
+admin-ui/node_modules/
+
+# SvelteKit
+admin-ui/.svelte-kit/
 
 # Data
 data/*.db
@@ -31,6 +35,7 @@ logs/*.log
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Backup
 backup/

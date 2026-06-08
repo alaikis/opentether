@@ -2,6 +2,7 @@ package handler
 
 import (
 	"github.com/alaikis/opentether/internal/config"
+	"github.com/alaikis/opentether/internal/im"
 	"github.com/alaikis/opentether/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -19,6 +20,23 @@ func NewHandlers(services *service.Services, cfg *config.Config, db *gorm.DB) *H
 		config:   cfg,
 		db:       db,
 	}
+}
+
+// audit logs an operation to the audit log
+func (h *Handler) audit(c *fiber.Ctx, action, resourceType, resourceID, details string) {
+	userID := ""
+	userName := ""
+	if id, ok := c.Locals("user_id").(string); ok {
+		userID = id
+	}
+	if name, ok := c.Locals("name").(string); ok {
+		userName = name
+	}
+	ipAddress := c.IP()
+	userAgent := c.Get("User-Agent")
+
+	// Fire and forget - don't block the request if audit logging fails
+	go h.services.Log.Audit(userID, userName, action, resourceType, resourceID, details, ipAddress, userAgent)
 }
 
 // HealthCheck handles health check requests
@@ -124,6 +142,8 @@ func (h *Handler) CreateUser(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	h.audit(c, "create", "user", result.ID, "Created user: "+user.Name)
 	return c.JSON(result)
 }
 
@@ -138,6 +158,7 @@ func (h *Handler) UpdateUser(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	h.audit(c, "update", "user", id, "Updated user")
 	return c.JSON(result)
 }
 
@@ -146,6 +167,7 @@ func (h *Handler) DeleteUser(c *fiber.Ctx) error {
 	if err := h.services.User.Delete(id); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	h.audit(c, "delete", "user", id, "Deleted user")
 	return c.SendStatus(204)
 }
 
@@ -529,12 +551,64 @@ func (h *Handler) ListIMPairings(c *fiber.Ctx) error {
 	return c.JSON(pairings)
 }
 
+// BindIM 员工绑定自己的 IM 账号
+func (h *Handler) BindIM(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+
+	var input service.BindIMInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	binding, err := h.services.IM.BindUser(userID, input)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(binding)
+}
+
+// ListMyIMBindings 员工查看自己的 IM 绑定
+func (h *Handler) ListMyIMBindings(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	bindings, err := h.services.IM.ListUserBindings(userID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(bindings)
+}
+
 func (h *Handler) UnbindIM(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if err := h.services.IM.Unbind(id); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.SendStatus(204)
+}
+
+func (h *Handler) handleIMCallback(c *fiber.Ctx, platform string) error {
+	body := c.Body()
+
+	// 解析回调，识别用户
+	imCtx, err := h.services.IM.HandleCallback(platform, body)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 通过 Agent 处理消息
+	result, err := h.services.Agent.Chat(imCtx.UserID, imCtx.Message, "")
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 向 IM 用户发送回复
+	if reply, ok := result["message"].(string); ok && reply != "" {
+		if sendErr := h.services.IM.SendIMReply(platform, imCtx.ReplyTo, reply); sendErr != nil {
+			// 发送失败但 AI 处理成功，仍返回成功
+			return c.JSON(fiber.Map{"success": true, "message": reply, "send_error": sendErr.Error()})
+		}
+	}
+
+	return c.JSON(result)
 }
 
 func (h *Handler) WeComCallback(c *fiber.Ctx) error {
@@ -553,13 +627,29 @@ func (h *Handler) WhatsAppCallback(c *fiber.Ctx) error {
 	return h.handleIMCallback(c, "whatsapp")
 }
 
-func (h *Handler) handleIMCallback(c *fiber.Ctx, platform string) error {
+// ILinkCallback 处理 iLink AI Webhook 回调（同步回复模式）
+func (h *Handler) ILinkCallback(c *fiber.Ctx) error {
 	body := c.Body()
-	result, err := h.services.IM.HandleCallback(platform, body)
+
+	// 解析回调，识别用户
+	imCtx, err := h.services.IM.HandleCallback("ilink", body)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 通过 Agent 处理消息
+	result, err := h.services.Agent.Chat(imCtx.UserID, imCtx.Message, "")
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(result)
+
+	// iLink 同步回复：直接在 HTTP Response 中返回消息
+	reply, _ := result["message"].(string)
+	if reply == "" {
+		reply = "已收到您的消息"
+	}
+
+	return c.JSON(im.FormatILinkReply(imCtx.ReplyTo, reply))
 }
 
 // Log handlers
@@ -676,4 +766,370 @@ func (h *Handler) GetConversation(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(conv)
+}
+
+// ============================================
+// Skill Markdown Handlers - 从 MD 文件创建 Skill
+// ============================================
+
+// UploadMarkdownAndCreateSkill 上传 MD 文件并创建 Skill
+func (h *Handler) UploadMarkdownAndCreateSkill(c *fiber.Ctx) error {
+	// 获取上传的文件
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "请上传 MD 文件"})
+	}
+
+	// 检查文件类型
+	if len(file.Filename) < 3 || file.Filename[len(file.Filename)-3:] != ".md" {
+		return c.Status(400).JSON(fiber.Map{"error": "只支持 MD 文件"})
+	}
+
+	// 读取文件内容
+	fileContent, err := file.Open()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "无法读取文件"})
+	}
+	defer fileContent.Close()
+
+	buffer := make([]byte, file.Size)
+	if _, err := fileContent.Read(buffer); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "无法读取文件内容"})
+	}
+
+	markdownContent := string(buffer)
+
+	// 解析 MD 文件
+	parsed, err := h.services.SkillMarkdown.ParseMarkdownToSkill(markdownContent, file.Filename)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 创建 Skill
+	skill, err := h.services.SkillMarkdown.CreateSkillFromParsed(parsed)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "create", "skill", skill.ID, "从 MD 文件创建 Skill: "+skill.Name)
+
+	return c.JSON(fiber.Map{
+		"success":   true,
+		"skill_id":  skill.ID,
+		"skill_name": skill.Name,
+		"parsed":    parsed,
+	})
+}
+
+// ParseMarkdownPreview 预览解析 MD 文件内容
+func (h *Handler) ParseMarkdownPreview(c *fiber.Ctx) error {
+	type Request struct {
+		Content string `json:"content"`
+		Filename string `json:"filename"`
+	}
+
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	if req.Content == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "请提供 markdown 内容"})
+	}
+
+	parsed, err := h.services.SkillMarkdown.ParseMarkdownToSkill(req.Content, req.Filename)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(parsed)
+}
+
+// ============================================
+// MCP Handlers - MCP 协议集成
+// ============================================
+
+// ListMCPConfigs 列出 MCP 配置
+func (h *Handler) ListMCPConfigs(c *fiber.Ctx) error {
+	configs, err := h.services.MCP.GetConfigs()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(configs)
+}
+
+// CreateMCPConfig 创建 MCP 配置
+func (h *Handler) CreateMCPConfig(c *fiber.Ctx) error {
+	type MCPConfigInput struct {
+		Name    string `json:"name"`
+		Command string `json:"command"`
+		Args    string `json:"args"`
+		Env     string `json:"env"`
+		Enabled bool   `json:"enabled"`
+	}
+
+	var input MCPConfigInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	config := &service.MCPConfig{
+		Name:    input.Name,
+		Command: input.Command,
+		Args:    input.Args,
+		Env:     input.Env,
+		Enabled: input.Enabled,
+	}
+
+	if err := h.services.MCP.SaveToDB(config); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"success": true, "config": config})
+}
+
+// StartMCPServer 启动 MCP 服务器
+func (h *Handler) StartMCPServer(c *fiber.Ctx) error {
+	id := c.Params("id")
+
+	if err := h.services.MCP.StartServer(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 获取服务器状态
+	server, _ := h.services.MCP.GetServerStatus(id)
+
+	h.audit(c, "start", "mcp_server", id, "启动 MCP 服务器")
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"status":  server,
+	})
+}
+
+// StopMCPServer 停止 MCP 服务器
+func (h *Handler) StopMCPServer(c *fiber.Ctx) error {
+	id := c.Params("id")
+
+	if err := h.services.MCP.StopServer(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "stop", "mcp_server", id, "停止 MCP 服务器")
+
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// GetMCPStatus 获取 MCP 服务器状态
+func (h *Handler) GetMCPStatus(c *fiber.Ctx) error {
+	id := c.Params("id")
+
+	server, err := h.services.MCP.GetServerStatus(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(server)
+}
+
+// ListMCPTools 列出 MCP 工具
+func (h *Handler) ListMCPTools(c *fiber.Ctx) error {
+	id := c.Params("id")
+
+	tools, err := h.services.MCP.ListTools(id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"server_id": id,
+		"tools":     tools,
+	})
+}
+
+// CallMCPTool 调用 MCP 工具
+func (h *Handler) CallMCPTool(c *fiber.Ctx) error {
+	type CallToolInput struct {
+		ToolName   string                 `json:"tool_name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	}
+
+	var input CallToolInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	serverID := c.Params("id")
+
+	result, err := h.services.MCP.CallTool(serverID, input.ToolName, input.Arguments)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"result":  string(result),
+	})
+}
+
+// ============================================
+// PDF Handlers - PDF 报表生成
+// ============================================
+
+// GeneratePDFReport 生成 PDF 报表
+func (h *Handler) GeneratePDFReport(c *fiber.Ctx) error {
+	type ReportInput struct {
+		Title    string          `json:"title"`
+		Subtitle string          `json:"subtitle"`
+		Columns  []string        `json:"columns"`
+		Rows     [][]interface{} `json:"rows"`
+		Summary  string          `json:"summary"`
+	}
+
+	var input ReportInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	reportData := &service.ReportData{
+		Title:    input.Title,
+		Subtitle: input.Subtitle,
+		Columns:  input.Columns,
+		Rows:     input.Rows,
+		Summary:  input.Summary,
+	}
+
+	pdfBytes, err := h.services.PDF.GenerateReport(reportData)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 设置响应头
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", "attachment; filename=report.pdf")
+
+	return c.Send(pdfBytes)
+}
+
+// GenerateEmployeePDF 生成员工 PDF 报表
+func (h *Handler) GenerateEmployeePDF(c *fiber.Ctx) error {
+	type EmployeeReportInput struct {
+		Title   string          `json:"title"`
+		Columns []string        `json:"columns"`
+		Rows    [][]interface{} `json:"rows"`
+	}
+
+	var input EmployeeReportInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	pdfBytes, err := h.services.PDF.GenerateEmployeeReport(input.Title, input.Columns, input.Rows)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", "attachment; filename=employee_report.pdf")
+
+	return c.Send(pdfBytes)
+}
+
+// QueryToPDF 将查询结果转换为 PDF
+func (h *Handler) QueryToPDF(c *fiber.Ctx) error {
+	type QueryPDFInput struct {
+		Query   string          `json:"query"`
+		Columns []string        `json:"columns"`
+		Rows    [][]interface{} `json:"rows"`
+	}
+
+	var input QueryPDFInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	pdfBytes, err := h.services.PDF.GenerateQueryReport(input.Query, input.Columns, input.Rows)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", "attachment; filename=query_result.pdf")
+
+	return c.Send(pdfBytes)
+}
+
+// ============================================
+// Markdown PDF Handlers - Markdown 转 PDF
+// ============================================
+
+// ConvertMarkdownToPDF 将 Markdown 转换为 PDF
+func (h *Handler) ConvertMarkdownToPDF(c *fiber.Ctx) error {
+	type MD2PDFInput struct {
+		Markdown string `json:"markdown"`
+		Title    string `json:"title"`
+		Author   string `json:"author"`
+	}
+
+	var input MD2PDFInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	if input.Markdown == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "请提供 markdown 内容"})
+	}
+
+	var pdfBytes []byte
+	var err error
+
+	if input.Title != "" {
+		tmpl := service.DefaultTemplate()
+		tmpl.Title = input.Title
+		tmpl.Author = input.Author
+		pdfBytes, err = h.services.MarkdownPDF.ConvertWithTemplate(input.Markdown, tmpl)
+	} else {
+		pdfBytes, err = h.services.MarkdownPDF.Convert(input.Markdown)
+	}
+
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", "attachment; filename=document.pdf")
+
+	return c.Send(pdfBytes)
+}
+
+// ConvertMarkdownToPDFWithTemplate 使用模板转换
+func (h *Handler) ConvertMarkdownToPDFWithTemplate(c *fiber.Ctx) error {
+	type MD2PDFInput struct {
+		Markdown string              `json:"markdown"`
+		Template *service.PDFTemplate `json:"template"`
+	}
+
+	var input MD2PDFInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	if input.Markdown == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "请提供 markdown 内容"})
+	}
+
+	tmpl := input.Template
+	if tmpl == nil {
+		tmpl = service.DefaultTemplate()
+	}
+
+	pdfBytes, err := h.services.MarkdownPDF.ConvertWithTemplate(input.Markdown, tmpl)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", "attachment; filename=document.pdf")
+
+	return c.Send(pdfBytes)
 }

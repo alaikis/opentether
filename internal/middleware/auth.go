@@ -45,6 +45,9 @@ func Auth(secret string) fiber.Handler {
 		// Store user info in context
 		c.Locals("user_id", claims["user_id"])
 		c.Locals("global_user_id", claims["global_user_id"])
+		c.Locals("role", claims["role"])        // 角色
+		c.Locals("name", claims["name"])         // 用户名
+		c.Locals("permissions", claims["permissions"]) // 权限列表
 
 		return c.Next()
 	}
@@ -72,9 +75,73 @@ func OptionalAuth(secret string) fiber.Handler {
 			if claims, ok := token.Claims.(jwt.MapClaims); ok {
 				c.Locals("user_id", claims["user_id"])
 				c.Locals("global_user_id", claims["global_user_id"])
+				c.Locals("role", claims["role"])
 			}
 		}
 
 		return c.Next()
 	}
+}
+
+// RequireAdmin creates middleware that requires admin role
+func RequireAdmin() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		role, ok := c.Locals("role").(string)
+		if !ok || role != "admin" {
+			return c.Status(403).JSON(fiber.Map{
+				"error":   "forbidden",
+				"message": "此操作需要管理员权限",
+			})
+		}
+		return c.Next()
+	}
+}
+
+// RequireRole creates middleware that requires specific role
+func RequireRole(roles ...string) fiber.Handler {
+	roleMap := make(map[string]bool)
+	for _, role := range roles {
+		roleMap[role] = true
+	}
+
+	return func(c *fiber.Ctx) error {
+		role, ok := c.Locals("role").(string)
+		if !ok || !roleMap[role] {
+			return c.Status(403).JSON(fiber.Map{
+				"error":   "forbidden",
+				"message": "您没有权限执行此操作",
+			})
+		}
+		return c.Next()
+	}
+}
+
+// GetUserID retrieves user ID from context
+func GetUserID(c *fiber.Ctx) string {
+	if id, ok := c.Locals("user_id").(string); ok {
+		return id
+	}
+	return ""
+}
+
+// GetUserRole retrieves user role from context
+func GetUserRole(c *fiber.Ctx) string {
+	if role, ok := c.Locals("role").(string); ok {
+		return role
+	}
+	return ""
+}
+
+// GetUserName retrieves user name from context
+func GetUserName(c *fiber.Ctx) string {
+	if name, ok := c.Locals("name").(string); ok {
+		return name
+	}
+	return ""
+}
+
+// IsAdmin checks if the current user is admin
+func IsAdmin(c *fiber.Ctx) bool {
+	role, _ := c.Locals("role").(string)
+	return role == "admin"
 }

@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alaikis/opentether/internal/agent"
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/database"
+	"github.com/alaikis/opentether/internal/embedding"
+	"github.com/alaikis/opentether/internal/im"
 	"github.com/alaikis/opentether/internal/llm"
 	"github.com/alaikis/opentether/internal/models"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -45,8 +49,16 @@ func (s *AuthService) Login(username, password string) (string, error) {
 		return "", errors.New("invalid credentials")
 	}
 
-	// Generate JWT
-	token, err := s.generateToken(user.ID, user.GlobalUserID)
+	// 设置默认角色
+	if user.Role == "" {
+		user.Role = models.RoleUser
+	}
+
+	// 更新最后登录时间
+	s.db.Model(&user).Update("last_login_at", time.Now())
+
+	// Generate JWT with role
+	token, err := s.generateToken(user.ID, user.GlobalUserID, user.Name, user.Role)
 	if err != nil {
 		return "", err
 	}
@@ -75,15 +87,22 @@ func (s *AuthService) RefreshToken(tokenString string) (string, error) {
 		return "", errors.New("user account is not active")
 	}
 
-	return s.generateToken(user.ID, user.GlobalUserID)
+	// 设置默认角色
+	if user.Role == "" {
+		user.Role = models.RoleUser
+	}
+
+	return s.generateToken(user.ID, user.GlobalUserID, user.Name, user.Role)
 }
 
-func (s *AuthService) generateToken(userID, globalUserID string) (string, error) {
+func (s *AuthService) generateToken(userID, globalUserID, name, role string) (string, error) {
 	expire := time.Now().Add(24 * time.Hour)
 
 	claims := jwt.MapClaims{
 		"user_id":        userID,
 		"global_user_id": globalUserID,
+		"name":           name,
+		"role":           role,
 		"exp":            expire.Unix(),
 		"iat":            time.Now().Unix(),
 	}
@@ -635,6 +654,44 @@ func (s *SkillService) Test(id, input string) (map[string]interface{}, error) {
 }
 
 func (s *SkillService) SyncVector(id string) error {
+	// 加载所有启用的 Skill
+	var skills []models.Skill
+	if err := s.db.Where("enabled = ?", true).Find(&skills).Error; err != nil {
+		return fmt.Errorf("获取 Skill 列表失败: %w", err)
+	}
+
+	if len(skills) == 0 {
+		return nil
+	}
+
+	// 构建语料库并创建 Embedder
+	docs := make([]string, len(skills))
+	for i, sk := range skills {
+		docs[i] = sk.Name + " " + sk.Description + " " + sk.Keywords
+	}
+
+	embCfg := map[string]interface{}{"corpus": docs}
+	emb, err := embedding.Create("tfidf", embCfg)
+	if err != nil {
+		return fmt.Errorf("创建 Embedder 失败: %w", err)
+	}
+
+	// 为每个 Skill 计算并存储向量
+	for i, skill := range skills {
+		v, err := emb.Embed(docs[i])
+		if err != nil {
+			return fmt.Errorf("向量化失败 [%s]: %w", skill.Name, err)
+		}
+
+		encoded := agent.EncodeVector(v)
+		if err := s.db.Model(&skill).Updates(map[string]interface{}{
+			"vector_index":   encoded,
+			"vector_enabled": true,
+		}).Error; err != nil {
+			return fmt.Errorf("存储向量失败 [%s]: %w", skill.Name, err)
+		}
+	}
+
 	return nil
 }
 
@@ -701,6 +758,23 @@ type IMService struct {
 	db *gorm.DB
 }
 
+// BindIMInput 用户绑定 IM 输入
+// (CreateIMConfigInput, UpdateIMConfigInput 已在 service.go 定义)
+type BindIMInput struct {
+	ImConfigID string `json:"im_config_id"`
+	ImUserID   string `json:"im_user_id"`
+	ImUserName string `json:"im_user_name"`
+}
+
+// IMContext contains the parsed IM callback context
+type IMContext struct {
+	Platform string
+	UserID   string
+	UserName string
+	Message  string
+	ReplyTo  string // IM user ID to reply to
+}
+
 func NewIMService(db *gorm.DB) *IMService {
 	return &IMService{db: db}
 }
@@ -735,7 +809,7 @@ func (s *IMService) UpdateConfig(id string, input UpdateIMConfigInput) (*models.
 	updates := map[string]interface{}{
 		"name": input.Name, "app_id": input.AppID, "app_secret": input.AppSecret,
 		"token": input.Token, "webhook_url": input.WebhookURL,
-		"enabled": input.Enabled, "config": input.Config,
+		"callback_url": input.CallbackURL, "enabled": input.Enabled, "config": input.Config,
 	}
 	err := s.db.Model(&cfg).Updates(updates).Error
 	return &cfg, err
@@ -746,21 +820,113 @@ func (s *IMService) DeleteConfig(id string) error {
 }
 
 func (s *IMService) TestConfig(id string) (map[string]interface{}, error) {
-	return map[string]interface{}{"success": true}, nil
+	var cfg models.ImConfig
+	if err := s.db.First(&cfg, id).Error; err != nil {
+		return nil, err
+	}
+	// 尝试创建 platform handler 来验证配置
+	_, err := im.NewPlatformHandler(&cfg)
+	if err != nil {
+		return map[string]interface{}{"success": false, "message": err.Error()}, nil
+	}
+	return map[string]interface{}{"success": true, "message": "配置有效"}, nil
 }
 
+// BindUser 用户绑定 IM 账号（员工个人操作）
+func (s *IMService) BindUser(userID string, input BindIMInput) (*models.ImBinding, error) {
+	// 检查是否已绑定同一平台
+	var existing models.ImBinding
+	err := s.db.Where("user_id = ? AND im_config_id = ?", userID, input.ImConfigID).First(&existing).Error
+	if err == nil {
+		return nil, fmt.Errorf("已绑定该平台账号: %s", existing.ImUserName)
+	}
+
+	binding := models.ImBinding{
+		ImConfigID:   input.ImConfigID,
+		UserID:       userID,
+		ImUserID:     input.ImUserID,
+		ImUserName:   input.ImUserName,
+		BindingToken: uuid.New().String(),
+		Status:       "active",
+	}
+	if err := s.db.Create(&binding).Error; err != nil {
+		return nil, err
+	}
+	return &binding, nil
+}
+
+// ListUserBindings 列出当前用户的 IM 绑定（员工查看自己的绑定）
+func (s *IMService) ListUserBindings(userID string) ([]models.ImBinding, error) {
+	var bindings []models.ImBinding
+	err := s.db.Preload("ImConfig").Where("user_id = ?", userID).Find(&bindings).Error
+	return bindings, err
+}
+
+// ListPairings 管理员查看所有绑定
 func (s *IMService) ListPairings() ([]models.ImBinding, error) {
 	var bindings []models.ImBinding
 	err := s.db.Preload("User").Preload("ImConfig").Find(&bindings).Error
 	return bindings, err
 }
 
+// Unbind 解绑 IM 账号
 func (s *IMService) Unbind(id string) error {
 	return s.db.Delete(&models.ImBinding{}, id).Error
 }
 
-func (s *IMService) HandleCallback(platform string, body []byte) (map[string]interface{}, error) {
-	return map[string]interface{}{"success": true, "message": "Not implemented"}, nil
+// HandleCallback 处理 IM 回调：解析消息 → 识别用户 → 返回上下文
+func (s *IMService) HandleCallback(platform string, body []byte) (*IMContext, error) {
+	// 查找对应平台的 IM 配置
+	var cfg models.ImConfig
+	if err := s.db.Where("platform = ? AND enabled = ?", platform, true).First(&cfg).Error; err != nil {
+		return nil, fmt.Errorf("未找到启用的 IM 配置: %s", platform)
+	}
+
+	// 创建平台 handler 解析消息
+	handler, err := im.NewPlatformHandler(&cfg)
+	if err != nil {
+		return nil, fmt.Errorf("创建处理器失败: %w", err)
+	}
+
+	msg, err := handler.ParseCallback(body)
+	if err != nil {
+		return nil, fmt.Errorf("解析消息失败: %w", err)
+	}
+
+	// 根据 IM 用户 ID 查找绑定的系统用户
+	var binding models.ImBinding
+	if err := s.db.Where("im_config_id = ? AND im_user_id = ? AND status = ?",
+		cfg.ID, msg.FromUserID, "active").Preload("User").First(&binding).Error; err != nil {
+		return nil, fmt.Errorf("未找到 IM 用户绑定: %s", msg.FromUserID)
+	}
+
+	// 检查用户是否激活
+	if binding.User != nil && binding.User.Status != "active" {
+		return nil, fmt.Errorf("用户账户已被禁用")
+	}
+
+	return &IMContext{
+		Platform: platform,
+		UserID:   binding.UserID,
+		UserName: binding.User.Name,
+		Message:  msg.Content,
+		ReplyTo:  msg.FromUserID,
+	}, nil
+}
+
+// SendIMReply 向 IM 用户发送回复
+func (s *IMService) SendIMReply(platform string, imUserID string, content string) error {
+	var cfg models.ImConfig
+	if err := s.db.Where("platform = ? AND enabled = ?", platform, true).First(&cfg).Error; err != nil {
+		return fmt.Errorf("未找到 IM 配置: %s", platform)
+	}
+
+	handler, err := im.NewPlatformHandler(&cfg)
+	if err != nil {
+		return err
+	}
+
+	return handler.SendMessage(imUserID, content)
 }
 
 type LogService struct {
@@ -783,6 +949,42 @@ func (s *LogService) ListRequest(page, limit string) ([]models.AuditLog, error) 
 
 func (s *LogService) Export(logType, format string) ([]byte, error) {
 	return []byte("[]"), nil
+}
+
+// Audit creates an audit log entry for an operation
+func (s *LogService) Audit(userID, userName, action, resourceType, resourceID, details, ipAddress, userAgent string) error {
+	logEntry := models.AuditLog{
+		UserID:       userID,
+		UserName:     userName,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Details:      details,
+		IPAddress:    ipAddress,
+		UserAgent:    userAgent,
+		Status:       "success",
+	}
+	return s.db.Create(&logEntry).Error
+}
+
+// AuditWithStatus creates an audit log entry with status (success/failure)
+func (s *LogService) AuditWithStatus(userID, userName, action, resourceType, resourceID, details, ipAddress, userAgent, status, errorMsg string) error {
+	detailsJSON := details
+	if errorMsg != "" {
+		detailsJSON = details + " | Error: " + errorMsg
+	}
+	logEntry := models.AuditLog{
+		UserID:       userID,
+		UserName:     userName,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Details:      detailsJSON,
+		IPAddress:    ipAddress,
+		UserAgent:    userAgent,
+		Status:       status,
+	}
+	return s.db.Create(&logEntry).Error
 }
 
 type AgentService struct {

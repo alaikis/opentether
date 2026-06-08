@@ -1,10 +1,26 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+)
+
+// 用户角色常量
+const (
+	RoleAdmin  = "admin"  // 管理员：完全访问
+	RoleUser   = "user"   // 普通用户：基础功能
+	RoleGuest  = "guest"  // 访客：只读
+)
+
+// 用户权限常量
+const (
+	PermissionRead   = "read"    // 读取
+	PermissionWrite  = "write"   // 写入
+	PermissionDelete = "delete"  // 删除
+	PermissionAdmin  = "admin"   // 管理
 )
 
 type User struct {
@@ -14,9 +30,12 @@ type User struct {
 	Email        string    `json:"email" gorm:"type:varchar(255);uniqueIndex"`
 	Department   string    `json:"department" gorm:"type:varchar(100)"`
 	Position     string    `json:"position" gorm:"type:varchar(100)"`
+	Role         string    `json:"role" gorm:"type:varchar(20);default:user"` // admin, user, guest
+	Permissions  string    `json:"permissions" gorm:"type:varchar(500)"` // JSON: 权限列表
 	SSOID        string    `json:"sso_id" gorm:"type:varchar(100)"`
 	Status       string    `json:"status" gorm:"type:varchar(20);default:active"` // active, inactive, suspended
 	PasswordHash string    `json:"-" gorm:"type:varchar(255)"`
+	LastLoginAt  *time.Time `json:"last_login_at"`
 	CreatedBy    string    `json:"created_by" gorm:"type:varchar(36)"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -26,6 +45,40 @@ type User struct {
 	Conversations []Conversation `json:"conversations" gorm:"foreignKey:UserID"`
 	ImBindings    []ImBinding    `json:"im_bindings" gorm:"foreignKey:UserID"`
 	SkillAccess   []SkillAccess  `json:"skill_access" gorm:"foreignKey:UserID"`
+}
+
+// IsAdmin 检查是否为管理员
+func (u *User) IsAdmin() bool {
+	return u.Role == RoleAdmin
+}
+
+// HasPermission 检查是否有指定权限
+func (u *User) HasPermission(perm string) bool {
+	// 管理员拥有所有权限
+	if u.IsAdmin() {
+		return true
+	}
+
+	// 检查用户权限列表（JSON 数组格式）
+	if u.Permissions != "" {
+		var perms []string
+		if err := json.Unmarshal([]byte(u.Permissions), &perms); err == nil {
+			for _, p := range perms {
+				if p == perm || p == PermissionAdmin {
+					return true
+				}
+			}
+		}
+	}
+
+	// 检查用户组权限
+	for _, group := range u.Groups {
+		if group.GroupCode == "admin" || group.GroupCode == "Administrators" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (u *User) BeforeCreate(tx *gorm.DB) error {
