@@ -1,0 +1,4 @@
+<svelte:head><title>系统日志 - OpenTether</title></svelte:head>
+<div class="card"><div><h2 class="text-xl font-bold text-slate-800 mb-1">系统日志</h2><p class="text-sm text-slate-500 mb-6">审计日志和请求日志</p></div>
+<table class="w-full text-sm"><thead><tr class="border-b border-slate-200"><th class="text-left py-3 px-4 font-medium text-slate-500">时间</th><th class="text-left py-3 px-4 font-medium text-slate-500">用户</th><th class="text-left py-3 px-4 font-medium text-slate-500">操作</th><th class="text-left py-3 px-4 font-medium text-slate-500">详情</th></tr></thead>
+<tbody><tr class="border-b border-slate-100 hover:bg-slate-50"><td class="py-3 px-4 text-slate-500 text-xs">2026-06-08 08:30</td><td class="py-3 px-4">admin</td><td class="py-3 px-4"><span class="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full text-xs">登录</span></td><td class="py-3 px-4 text-slate-500 text-xs">IP: 192.168.1.1</td></tr></tbody></table></div>
