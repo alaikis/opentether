@@ -1,0 +1,43 @@
+# Wisehoof Enterprise AI Agent
+
+# Build
+wisehoof
+wisehoof.exe
+admin-ui/build
+
+# Dependencies
+vendor/
+
+# Data
+data/*.db
+data/*.db-journal
+data/vector/
+
+# Logs
+logs/*.log
+
+# Environment
+.env
+.env.local
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup
+backup/
+*.bak
+
+# Certificates
+certs/
+
+# Models (downloaded)
+models/embedding/*
+!models/embedding/.gitkeep

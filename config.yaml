@@ -1,0 +1,105 @@
+# OpenTether Enterprise AI Agent Configuration
+
+# Server Configuration
+server:
+  port: 8080
+  mode: "development" # development, production
+
+# Database Configuration
+database:
+  type: "sqlite" # sqlite, mysql, postgres
+  name: "data/opentether.db"
+  auto_migrate: true
+
+  # For MySQL/PostgreSQL (optional)
+  # host: "localhost"
+  # port: 3306
+  # user: "root"
+  # password: "${DB_PASSWORD}"
+  # sslmode: "disable"
+
+# Security Configuration
+security:
+  jwt:
+    secret: "${JWT_SECRET}"
+    expire: "24h"
+    refresh_expire: "7d"
+
+  encryption:
+    key: "${ENCRYPTION_KEY}" # 32 bytes for AES-256
+
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+
+  cors:
+    allowed_origins:
+      - "http://localhost:5173"
+      - "http://localhost:8080"
+      - "*" # For development only
+    allowed_methods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    allowed_headers:
+      - "Origin"
+      - "Content-Type"
+      - "Accept"
+      - "Authorization"
+
+  https:
+    enabled: false
+    cert_file: "./certs/server.crt"
+    key_file: "./certs/server.key"
+
+# Auto Update Configuration
+update:
+  enabled: false
+  check_interval: "24h"
+  github_repo: "company/opentether"
+  auto_backup: true
+  require_approval: true
+
+# Executor Configuration (for scheduled tasks)
+executor:
+  mode: "embedded" # embedded, independent
+
+  embedded:
+    max_concurrent: 5
+    timeout: "1h"
+
+  independent:
+    queue:
+      type: "redis" # redis, kafka
+      address: "localhost:6379"
+
+# Logging Configuration
+logging:
+  level: "info" # debug, info, warn, error
+  file: "./logs/opentether.log"
+  max_size: 100 # MB
+  max_backups: 10
+  max_age: 30 # days
+  compress: true
+
+# Embedding Model Configuration
+embedding:
+  model: "bge-m3"
+  model_path: "./models/embedding/"
+  dimension: 1024
+
+# Admin Panel Configuration
+admin:
+  title: "OpenTether 管理后台"
+  logo: "/assets/logo.svg"
+  theme: "light" # light, dark
+
+# Features Configuration
+features:
+  im_enabled: true
+  scheduled_tasks: true
+  text2sql: true
+  report_generation: true
+  file_processing: true

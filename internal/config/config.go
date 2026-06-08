@@ -1,0 +1,178 @@
+package config
+
+import (
+	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Config struct {
+	Server   ServerConfig   `yaml:"server"`
+	Database DatabaseConfig `yaml:"database"`
+	Security SecurityConfig `yaml:"security"`
+	Update   UpdateConfig   `yaml:"update"`
+	Executor ExecutorConfig `yaml:"executor"`
+}
+
+type ServerConfig struct {
+	Port int    `yaml:"port"`
+	Mode string `yaml:"mode"` // development, production
+}
+
+type DatabaseConfig struct {
+	Type        string `yaml:"type"` // sqlite, mysql, postgres
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	Name        string `yaml:"name"`
+	User        string `yaml:"user"`
+	Password    string `yaml:"password"`
+	SSLMode     string `yaml:"sslmode"`
+	AutoMigrate bool   `yaml:"auto_migrate"`
+}
+
+type SecurityConfig struct {
+	JWT        JWTConfig        `yaml:"jwt"`
+	Encryption EncryptionConfig `yaml:"encryption"`
+	RateLimit  RateLimitConfig  `yaml:"rate_limit"`
+	CORS       CORSConfig       `yaml:"cors"`
+	HTTPS      HTTPSConfig      `yaml:"https"`
+}
+
+type JWTConfig struct {
+	Secret        string `yaml:"secret"`
+	Expire        string `yaml:"expire"`
+	RefreshExpire string `yaml:"refresh_expire"`
+}
+
+type EncryptionConfig struct {
+	Key string `yaml:"key"`
+}
+
+type RateLimitConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	RequestsPerMinute int  `yaml:"requests_per_minute"`
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	AllowedMethods []string `yaml:"allowed_methods"`
+	AllowedHeaders []string `yaml:"allowed_headers"`
+}
+
+type HTTPSConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+type UpdateConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	CheckInterval   string `yaml:"check_interval"`
+	GithubRepo      string `yaml:"github_repo"`
+	AutoBackup      bool   `yaml:"auto_backup"`
+	RequireApproval bool   `yaml:"require_approval"`
+}
+
+type ExecutorConfig struct {
+	Mode              string            `yaml:"mode"` // embedded, independent
+	EmbeddedConfig    EmbeddedConfig    `yaml:"embedded"`
+	IndependentConfig IndependentConfig `yaml:"independent"`
+}
+
+type EmbeddedConfig struct {
+	MaxConcurrent int    `yaml:"max_concurrent"`
+	Timeout       string `yaml:"timeout"`
+}
+
+type IndependentConfig struct {
+	Queue QueueConfig `yaml:"queue"`
+}
+
+type QueueConfig struct {
+	Type    string `yaml:"type"` // redis, kafka
+	Address string `yaml:"address"`
+}
+
+func Load() *Config {
+	// Default configuration
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+			Mode: "development",
+		},
+		Database: DatabaseConfig{
+			Type:        "sqlite",
+			Name:        "data/wisehoof.db",
+			AutoMigrate: true,
+		},
+		Security: SecurityConfig{
+			JWT: JWTConfig{
+				Expire:        "24h",
+				RefreshExpire: "7d",
+			},
+			RateLimit: RateLimitConfig{
+				Enabled:           true,
+				RequestsPerMinute: 60,
+			},
+			CORS: CORSConfig{
+				AllowedOrigins: []string{"*"},
+				AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+				AllowedHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization"},
+			},
+		},
+		Update: UpdateConfig{
+			Enabled:         false,
+			CheckInterval:   "24h",
+			AutoBackup:      true,
+			RequireApproval: true,
+		},
+		Executor: ExecutorConfig{
+			Mode: "embedded",
+			EmbeddedConfig: EmbeddedConfig{
+				MaxConcurrent: 5,
+				Timeout:       "1h",
+			},
+		},
+	}
+
+	// Load from config.yaml if exists
+	if _, err := os.Stat("config.yaml"); err == nil {
+		data, err := os.ReadFile("config.yaml")
+		if err != nil {
+			return cfg
+		}
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return cfg
+		}
+	}
+
+	// Override with environment variables
+	if port := os.Getenv("SERVER_PORT"); port != "" {
+		cfg.Server.Port = 8080
+		fmt.Sscanf(port, "%d", &cfg.Server.Port)
+	}
+	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
+		cfg.Security.JWT.Secret = jwtSecret
+	}
+	if dbPassword := os.Getenv("DB_PASSWORD"); dbPassword != "" {
+		cfg.Database.Password = dbPassword
+	}
+
+	return cfg
+}
+
+// Load loads configuration from file
+func LoadFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
