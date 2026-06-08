@@ -4,6 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/database"
@@ -55,7 +58,36 @@ type SetupRequest struct {
 
 // Setup 执行系统初始化
 func (s *SetupService) Setup(req *SetupRequest) (map[string]interface{}, error) {
-	// 1. 先测试数据库连接（如果是外部数据库）
+	// 1. 规范化 SQLite 数据库路径
+	dbName := req.DBName
+	if req.DBType == "sqlite" {
+		// 如果 db_name 不包含路径分隔符，说明只是文件名，需要添加到 data/ 目录
+		if !strings.Contains(dbName, "/") && !strings.Contains(dbName, "\\") {
+			dbName = "data/" + dbName
+		}
+		// 如果没有 .db 后缀，添加它
+		if !strings.HasSuffix(dbName, ".db") {
+			dbName = dbName + ".db"
+		}
+		// 确保 data 目录存在
+		dir := filepath.Dir(dbName)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("创建数据目录失败: %v", err)
+		}
+	}
+
+	// 2. 根据请求参数创建数据库配置
+	dbCfg := config.DatabaseConfig{
+		Type:        req.DBType,
+		Host:        req.DBHost,
+		Port:        req.DBPort,
+		Name:        dbName,
+		User:        req.DBUser,
+		Password:    req.DBPassword,
+		AutoMigrate: true,
+	}
+
+	// 2. 测试数据库连接
 	if req.DBType != "sqlite" {
 		cfg := database.ExternalDBConfig{
 			Host:     req.DBHost,
@@ -76,7 +108,21 @@ func (s *SetupService) Setup(req *SetupRequest) (map[string]interface{}, error) 
 		}
 	}
 
-	// 2. 创建管理员账号
+	// 3. 创建新的数据库连接
+	db, err := database.Initialize(dbCfg)
+	if err != nil {
+		return nil, fmt.Errorf("数据库连接失败: %v", err)
+	}
+	if db == nil {
+		return nil, fmt.Errorf("无法创建数据库连接")
+	}
+
+	// 4. 运行迁移
+	if err := database.Migrate(db); err != nil {
+		return nil, fmt.Errorf("数据库迁移失败: %v", err)
+	}
+
+	// 5. 创建管理员账号
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.AdminPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("密码加密失败: %v", err)
@@ -96,7 +142,7 @@ func (s *SetupService) Setup(req *SetupRequest) (map[string]interface{}, error) 
 		CreatedBy:    "system",
 	}
 
-	err = s.db.Create(&user).Error
+	err = db.Create(&user).Error
 	if err != nil {
 		return nil, fmt.Errorf("创建管理员失败: %v", err)
 	}

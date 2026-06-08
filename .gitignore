@@ -3,6 +3,7 @@
 # Build
 wisehoof
 wisehoof.exe
+output/
 admin-ui/build
 
 # Dependencies

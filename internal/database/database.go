@@ -6,14 +6,19 @@ import (
 
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/models"
+	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 func Initialize(cfg config.DatabaseConfig) (*gorm.DB, error) {
+	// 如果数据库类型为 "none"，表示未配置，跳过初始化
+	if cfg.Type == "none" || cfg.Type == "" {
+		return nil, nil
+	}
+
 	var dialector gorm.Dialector
 
 	switch cfg.Type {

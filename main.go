@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
 	"os"
@@ -21,8 +22,8 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-// //go:embed admin-ui/build
-// var adminUI embed.FS
+//go:embed admin-ui/build
+var adminUI embed.FS
 
 func main() {
 	// Load configuration
@@ -34,9 +35,13 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	// Run migrations
-	if err := database.Migrate(db); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+	// Run migrations (only if database is configured)
+	if db != nil {
+		if err := database.Migrate(db); err != nil {
+			log.Fatalf("Failed to run migrations: %v", err)
+		}
+	} else {
+		log.Printf("Database not configured, skipping migrations. Use /setup to configure.")
 	}
 
 	// Initialize services
@@ -69,7 +74,7 @@ func main() {
 	app.Use(middleware.CORS(cfg.Security.CORS))
 
 	// Setup routes
-	router.Setup(app, handlers, cfg, nil)
+	router.Setup(app, handlers, cfg, adminUI, db)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
