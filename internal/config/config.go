@@ -14,6 +14,7 @@ type Config struct {
 	Update    UpdateConfig    `yaml:"update"`
 	Executor  ExecutorConfig  `yaml:"executor"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
+	SMTP      SMTPConfig      `yaml:"smtp"`
 }
 
 type ServerConfig struct {
@@ -98,11 +99,24 @@ type QueueConfig struct {
 // EmbeddingConfig 向量嵌入配置
 // 未配置时默认使用内置 TF-IDF（零依赖）
 type EmbeddingConfig struct {
-	Model      string `yaml:"model"`      // 模型名称, 空=默认 tfidf
-	ModelPath  string `yaml:"model_path"` // 模型文件路径
-	Dimension  int    `yaml:"dimension"`  // 向量维度
-	Provider   string `yaml:"provider"`   // embedding 提供者: tfidf, openai, local
-	StoreProvider string `yaml:"store"`   // vectorstore 提供者: memory, milvus, qdrant
+	Model         string `yaml:"model"`      // 模型名称, 空=默认 tfidf
+	ModelPath     string `yaml:"model_path"` // 模型文件路径
+	Dimension     int    `yaml:"dimension"`  // 向量维度
+	Provider      string `yaml:"provider"`   // embedding 提供者: tfidf, openai, local
+	StoreProvider string `yaml:"store"`      // vectorstore 提供者: memory, milvus, qdrant
+}
+
+// SMTPConfig SMTP 邮件配置
+type SMTPConfig struct {
+	Enabled    bool   `yaml:"enabled"`    // 是否启用 SMTP
+	Host       string `yaml:"host"`       // SMTP 服务器地址
+	Port       int    `yaml:"port"`       // SMTP 端口 (常用 587 for TLS, 465 for SSL)
+	Username   string `yaml:"username"`   // SMTP 用户名
+	Password   string `yaml:"password"`   // SMTP 密码
+	Encryption string `yaml:"encryption"` // 加密方式: none, tls, ssl
+	FromEmail  string `yaml:"from_email"` // 发件人邮箱
+	FromName   string `yaml:"from_name"`  // 发件人名称
+	ToEmail    string `yaml:"to_email"`   // 收件人邮箱 (用于测试和通知)
 }
 
 func Load() *Config {
@@ -113,7 +127,7 @@ func Load() *Config {
 			Mode: "development",
 		},
 		Database: DatabaseConfig{
-			Type:        "none",  // "none"=未配置(使用安装向导), "sqlite"=SQLite, "mysql"=MySQL, "postgres"=PostgreSQL
+			Type:        "none", // "none"=未配置(使用安装向导), "sqlite"=SQLite, "mysql"=MySQL, "postgres"=PostgreSQL
 			Name:        "data/wisehoof.db",
 			AutoMigrate: true,
 		},
@@ -144,6 +158,13 @@ func Load() *Config {
 				MaxConcurrent: 5,
 				Timeout:       "1h",
 			},
+		},
+		SMTP: SMTPConfig{
+			Enabled:    false,
+			Host:       "smtp.example.com",
+			Port:       587,
+			Encryption: "tls",
+			FromName:   "Wisehoof System",
 		},
 	}
 
@@ -186,4 +207,18 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// SaveToFile saves configuration to file
+func SaveToFile(cfg *Config, path string) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
 }

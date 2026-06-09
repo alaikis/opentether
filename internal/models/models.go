@@ -10,35 +10,35 @@ import (
 
 // 用户角色常量
 const (
-	RoleAdmin  = "admin"  // 管理员：完全访问
-	RoleUser   = "user"   // 普通用户：基础功能
-	RoleGuest  = "guest"  // 访客：只读
+	RoleAdmin = "admin" // 管理员：完全访问
+	RoleUser  = "user"  // 普通用户：基础功能
+	RoleGuest = "guest" // 访客：只读
 )
 
 // 用户权限常量
 const (
-	PermissionRead   = "read"    // 读取
-	PermissionWrite  = "write"   // 写入
-	PermissionDelete = "delete"  // 删除
-	PermissionAdmin  = "admin"   // 管理
+	PermissionRead   = "read"   // 读取
+	PermissionWrite  = "write"  // 写入
+	PermissionDelete = "delete" // 删除
+	PermissionAdmin  = "admin"  // 管理
 )
 
 type User struct {
-	ID           string    `json:"id" gorm:"type:varchar(36);primaryKey"`
-	GlobalUserID string    `json:"global_user_id" gorm:"type:varchar(100);uniqueIndex;not null"`
-	Name         string    `json:"name" gorm:"type:varchar(255);not null"`
-	Email        string    `json:"email" gorm:"type:varchar(255);uniqueIndex"`
-	Department   string    `json:"department" gorm:"type:varchar(100)"`
-	Position     string    `json:"position" gorm:"type:varchar(100)"`
-	Role         string    `json:"role" gorm:"type:varchar(20);default:user"` // admin, user, guest
-	Permissions  string    `json:"permissions" gorm:"type:varchar(500)"` // JSON: 权限列表
-	SSOID        string    `json:"sso_id" gorm:"type:varchar(100)"`
-	Status       string    `json:"status" gorm:"type:varchar(20);default:active"` // active, inactive, suspended
-	PasswordHash string    `json:"-" gorm:"type:varchar(255)"`
+	ID           string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	GlobalUserID string     `json:"global_user_id" gorm:"type:varchar(100);uniqueIndex;not null"`
+	Name         string     `json:"name" gorm:"type:varchar(255);not null"`
+	Email        string     `json:"email" gorm:"type:varchar(255);uniqueIndex"`
+	Department   string     `json:"department" gorm:"type:varchar(100)"`
+	Position     string     `json:"position" gorm:"type:varchar(100)"`
+	Role         string     `json:"role" gorm:"type:varchar(20);default:user"` // admin, user, guest
+	Permissions  string     `json:"permissions" gorm:"type:varchar(500)"`      // JSON: 权限列表
+	SSOID        string     `json:"sso_id" gorm:"type:varchar(100)"`
+	Status       string     `json:"status" gorm:"type:varchar(20);default:active"` // active, inactive, suspended
+	PasswordHash string     `json:"-" gorm:"type:varchar(255)"`
 	LastLoginAt  *time.Time `json:"last_login_at"`
-	CreatedBy    string    `json:"created_by" gorm:"type:varchar(36)"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	CreatedBy    string     `json:"created_by" gorm:"type:varchar(36)"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 
 	// Relations
 	Groups        []UserGroup    `json:"groups" gorm:"many2many:user_group_members;"`
@@ -173,14 +173,14 @@ type DataSource struct {
 	ID             string    `json:"id" gorm:"type:varchar(36);primaryKey"`
 	Name           string    `json:"name" gorm:"type:varchar(100);not null"`
 	SourceType     string    `json:"source_type" gorm:"type:varchar(50)"` // mysql, postgres, mongodb, excel, csv, api
-	Host           string    `json:"host" gorm:"type:varchar(100)"`        // 数据库主机
-	Port           int       `json:"port"`                                  // 端口
-	User           string    `json:"user" gorm:"type:varchar(100)"`        // 用户名
-	Password       string    `json:"password" gorm:"type:varchar(500)"`    // 密码（加密存储）
-	Database       string    `json:"database" gorm:"type:varchar(100)"`    // 数据库名
-	Connection     string    `json:"connection" gorm:"type:text"`          // 连接字符串（兼容旧版本）
-	SchemaInfo     string    `json:"schema_info" gorm:"type:text"`         // JSON schema - 表结构信息
-	TableRelations string    `json:"table_relations" gorm:"type:text"`     // JSON - 表关系信息
+	Host           string    `json:"host" gorm:"type:varchar(100)"`       // 数据库主机
+	Port           int       `json:"port"`                                // 端口
+	User           string    `json:"user" gorm:"type:varchar(100)"`       // 用户名
+	Password       string    `json:"password" gorm:"type:varchar(500)"`   // 密码（加密存储）
+	Database       string    `json:"database" gorm:"type:varchar(100)"`   // 数据库名
+	Connection     string    `json:"connection" gorm:"type:text"`         // 连接字符串（兼容旧版本）
+	SchemaInfo     string    `json:"schema_info" gorm:"type:text"`        // JSON schema - 表结构信息
+	TableRelations string    `json:"table_relations" gorm:"type:text"`    // JSON - 表关系信息
 	Enabled        bool      `json:"enabled" gorm:"default:true"`
 	CreatedBy      string    `json:"created_by" gorm:"type:varchar(36)"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -413,6 +413,204 @@ type TaskExecution struct {
 func (e *TaskExecution) BeforeCreate(tx *gorm.DB) error {
 	if e.ID == "" {
 		e.ID = uuid.New().String()
+	}
+	return nil
+}
+
+// ApiKey API 密钥 - 用于多系统集成，代用户发起请求
+type ApiKey struct {
+	ID         string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	UserID     string     `json:"user_id" gorm:"type:varchar(36);index;not null"`
+	Name       string     `json:"name" gorm:"type:varchar(100);not null"`
+	Key        string     `json:"-" gorm:"type:varchar(64);uniqueIndex;not null"` // 完整 key（hash 存储）
+	KeyPrefix  string     `json:"key_prefix" gorm:"type:varchar(16)"`             // 前缀显示: ot_sk_xxxx
+	Scopes     string     `json:"scopes" gorm:"type:varchar(500)"`                // JSON: 权限范围
+	LastUsedAt *time.Time `json:"last_used_at"`
+	ExpiresAt  *time.Time `json:"expires_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+
+	User *User `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
+
+func (k *ApiKey) BeforeCreate(tx *gorm.DB) error {
+	if k.ID == "" {
+		k.ID = uuid.New().String()
+	}
+	return nil
+}
+
+// IMBindingToken 临时 IM 绑定 token（用于扫码绑定验证）
+type IMBindingToken struct {
+	ID         string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	UserID     string    `json:"user_id" gorm:"type:varchar(36);index;not null"`
+	ImConfigID string    `json:"im_config_id" gorm:"type:varchar(36);index;not null"`
+	Token      string    `json:"token" gorm:"type:varchar(64);uniqueIndex;not null"`
+	Status     string    `json:"status" gorm:"type:varchar(20);default:pending"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
+
+	User     *User     `json:"user,omitempty" gorm:"foreignKey:UserID"`
+	ImConfig *ImConfig `json:"im_config,omitempty" gorm:"foreignKey:ImConfigID"`
+}
+
+func (t *IMBindingToken) BeforeCreate(tx *gorm.DB) error {
+	if t.ID == "" {
+		t.ID = uuid.New().String()
+	}
+	return nil
+}
+
+// AgentTask 下发到独立 Agent 的任务
+type AgentTask struct {
+	ID          string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	AgentID     string     `json:"agent_id" gorm:"type:varchar(36);index"`
+	TaskType    string     `json:"task_type"`
+	Payload     string     `json:"payload" gorm:"type:text"`
+	Status      string     `json:"status" gorm:"type:varchar(20);default:pending"`
+	Result      string     `json:"result" gorm:"type:text"`
+	Error       string     `json:"error" gorm:"type:text"`
+	AssignedAt  *time.Time `json:"assigned_at"`
+	StartedAt   *time.Time `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func (t *AgentTask) BeforeCreate(tx *gorm.DB) error {
+	if t.ID == "" {
+		t.ID = GenerateID()
+	}
+	return nil
+}
+
+// AgentPairing 配对码记录
+type AgentPairing struct {
+	ID        string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Code      string     `json:"code" gorm:"type:varchar(16);uniqueIndex;not null"`
+	AgentID   string     `json:"agent_id" gorm:"type:varchar(36);index"`
+	Status    string     `json:"status" gorm:"type:varchar(20);default:pending"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	PairedAt  *time.Time `json:"paired_at"`
+}
+
+func (p *AgentPairing) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == "" {
+		p.ID = GenerateID()
+	}
+	return nil
+}
+
+// GenerateID 生成通用唯一 ID（短格式）
+func GenerateID() string {
+	return uuid.New().String()
+}
+
+// GeneratePairingCode 生成配对码（格式: ot_p_xxxx-xxxx）
+func GeneratePairingCode() string {
+	id := uuid.New().String()
+	return "ot_p_" + id[:8]
+}
+
+// AgentExperience 智能体经验记录
+type AgentExperience struct {
+	ID             string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Name           string     `json:"name" gorm:"type:varchar(200)"`
+	Description    string     `json:"description" gorm:"type:text"`
+	TriggerPattern string     `json:"trigger_pattern" gorm:"type:text"`
+	TriggerVector  string     `json:"trigger_vector" gorm:"type:text"`
+	Steps          string     `json:"steps" gorm:"type:text"`
+	Scope          string     `json:"scope" gorm:"type:varchar(50)"`
+	Status         string     `json:"status" gorm:"type:varchar(20);default:pending_review"`
+	UsageCount     int        `json:"usage_count" gorm:"default:0"`
+	SuccessCount   int        `json:"success_count" gorm:"default:0"`
+	AvgTokensSaved int        `json:"avg_tokens_saved" gorm:"default:0"`
+	CreatedBy      string     `json:"created_by" gorm:"type:varchar(36);index"`
+	ReviewedBy     string     `json:"reviewed_by" gorm:"type:varchar(36)"`
+	ReviewNote     string     `json:"review_note" gorm:"type:text"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	ReviewedAt     *time.Time `json:"reviewed_at"`
+
+	CreatedByUser *User `json:"created_by_user,omitempty" gorm:"foreignKey:CreatedBy"`
+}
+
+func (e *AgentExperience) BeforeCreate(tx *gorm.DB) error {
+	if e.ID == "" {
+		e.ID = GenerateID()
+	}
+	return nil
+}
+
+// UserMemory 用户长期记忆
+type UserMemory struct {
+	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	UserID    string    `json:"user_id" gorm:"type:varchar(36);index;not null"`
+	Type      string    `json:"type" gorm:"type:varchar(50)"`
+	Key       string    `json:"key" gorm:"type:varchar(200)"`
+	Content   string    `json:"content" gorm:"type:text"`
+	Priority  int       `json:"priority" gorm:"default:0"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	User *User `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
+
+func (m *UserMemory) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == "" {
+		m.ID = GenerateID()
+	}
+	return nil
+}
+
+// GroupMemory 用户组共享记忆
+type GroupMemory struct {
+	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	GroupID   string    `json:"group_id" gorm:"type:varchar(36);index;not null"`
+	Type      string    `json:"type" gorm:"type:varchar(50)"`
+	Key       string    `json:"key" gorm:"type:varchar(200)"`
+	Content   string    `json:"content" gorm:"type:text"`
+	Priority  int       `json:"priority" gorm:"default:0"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	Group *UserGroup `json:"group,omitempty" gorm:"foreignKey:GroupID"`
+}
+
+func (m *GroupMemory) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == "" {
+		m.ID = GenerateID()
+	}
+	return nil
+}
+
+// AgentScript 智能体脚本
+type AgentScript struct {
+	ID           string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	SkillID      string     `json:"skill_id" gorm:"type:varchar(36);index"`
+	ExperienceID string     `json:"experience_id" gorm:"type:varchar(36);index"`
+	Name         string     `json:"name" gorm:"type:varchar(200)"`
+	Language     string     `json:"language" gorm:"type:varchar(20)"` // bash, python
+	Content      string     `json:"content" gorm:"type:text"`
+	FilePath     string     `json:"file_path" gorm:"type:varchar(500)"` // 文件路径
+	FileHash     string     `json:"file_hash" gorm:"type:varchar(64)"`  // SHA-256 文件哈希
+	HashVerified bool       `json:"hash_verified" gorm:"default:true"`  // 哈希是否通过
+	Description  string     `json:"description" gorm:"type:text"`
+	IsPermanent  bool       `json:"is_permanent" gorm:"default:false"`
+	ExpiresAt    *time.Time `json:"expires_at"`
+	CreatedBy    string     `json:"created_by" gorm:"type:varchar(36)"`
+	ExecCount    int        `json:"exec_count" gorm:"default:0"`
+	LastExecAt   *time.Time `json:"last_exec_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (s *AgentScript) BeforeCreate(tx *gorm.DB) error {
+	if s.ID == "" {
+		s.ID = GenerateID()
+	}
+	if !s.IsPermanent && s.ExpiresAt == nil {
+		t := time.Now().Add(30 * 24 * time.Hour)
+		s.ExpiresAt = &t
 	}
 	return nil
 }

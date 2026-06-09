@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"fmt"
+	"net/smtp"
+	"strings"
+
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/im"
 	"github.com/alaikis/opentether/internal/service"
@@ -615,6 +619,10 @@ func (h *Handler) WeComCallback(c *fiber.Ctx) error {
 	return h.handleIMCallback(c, "wecom")
 }
 
+func (h *Handler) PersonalWeChatCallback(c *fiber.Ctx) error {
+	return h.handleIMCallback(c, "personal_wechat")
+}
+
 func (h *Handler) FeishuCallback(c *fiber.Ctx) error {
 	return h.handleIMCallback(c, "feishu")
 }
@@ -625,6 +633,14 @@ func (h *Handler) DingTalkCallback(c *fiber.Ctx) error {
 
 func (h *Handler) WhatsAppCallback(c *fiber.Ctx) error {
 	return h.handleIMCallback(c, "whatsapp")
+}
+
+func (h *Handler) PersonalWhatsAppCallback(c *fiber.Ctx) error {
+	return h.handleIMCallback(c, "whatsapp_personal")
+}
+
+func (h *Handler) BusinessWhatsAppCallback(c *fiber.Ctx) error {
+	return h.handleIMCallback(c, "whatsapp_business")
 }
 
 // ILinkCallback 处理 iLink AI Webhook 回调（同步回复模式）
@@ -814,17 +830,17 @@ func (h *Handler) UploadMarkdownAndCreateSkill(c *fiber.Ctx) error {
 	h.audit(c, "create", "skill", skill.ID, "从 MD 文件创建 Skill: "+skill.Name)
 
 	return c.JSON(fiber.Map{
-		"success":   true,
-		"skill_id":  skill.ID,
+		"success":    true,
+		"skill_id":   skill.ID,
 		"skill_name": skill.Name,
-		"parsed":    parsed,
+		"parsed":     parsed,
 	})
 }
 
 // ParseMarkdownPreview 预览解析 MD 文件内容
 func (h *Handler) ParseMarkdownPreview(c *fiber.Ctx) error {
 	type Request struct {
-		Content string `json:"content"`
+		Content  string `json:"content"`
 		Filename string `json:"filename"`
 	}
 
@@ -950,7 +966,7 @@ func (h *Handler) ListMCPTools(c *fiber.Ctx) error {
 // CallMCPTool 调用 MCP 工具
 func (h *Handler) CallMCPTool(c *fiber.Ctx) error {
 	type CallToolInput struct {
-		ToolName   string                 `json:"tool_name"`
+		ToolName  string                 `json:"tool_name"`
 		Arguments map[string]interface{} `json:"arguments"`
 	}
 
@@ -1105,7 +1121,7 @@ func (h *Handler) ConvertMarkdownToPDF(c *fiber.Ctx) error {
 // ConvertMarkdownToPDFWithTemplate 使用模板转换
 func (h *Handler) ConvertMarkdownToPDFWithTemplate(c *fiber.Ctx) error {
 	type MD2PDFInput struct {
-		Markdown string              `json:"markdown"`
+		Markdown string               `json:"markdown"`
 		Template *service.PDFTemplate `json:"template"`
 	}
 
@@ -1132,4 +1148,626 @@ func (h *Handler) ConvertMarkdownToPDFWithTemplate(c *fiber.Ctx) error {
 	c.Set("Content-Disposition", "attachment; filename=document.pdf")
 
 	return c.Send(pdfBytes)
+}
+
+// ============================================
+// ApiKey Handlers - API 密钥管理
+// ============================================
+
+// ListApiKeys 列出 API 密钥（管理员可查询所有，或按 user_id 过滤）
+func (h *Handler) ListApiKeys(c *fiber.Ctx) error {
+	userID := c.Query("user_id")
+	keys, err := h.services.ApiKey.List(userID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(keys)
+}
+
+// CreateApiKey 创建新的 API 密钥（返回原始密钥仅此一次）
+func (h *Handler) CreateApiKey(c *fiber.Ctx) error {
+	type CreateApiKeyInput struct {
+		UserID        string   `json:"user_id"`
+		Name          string   `json:"name"`
+		Scopes        []string `json:"scopes"`
+		ExpiresInDays int      `json:"expires_in_days"`
+	}
+	var input CreateApiKeyInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	userID := input.UserID
+	if userID == "" {
+		userID = c.Locals("user_id").(string)
+	}
+
+	apiKey, rawKey, err := h.services.ApiKey.Create(userID, input.Name, input.Scopes, input.ExpiresInDays)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "create", "api_key", apiKey.ID, "创建 API 密钥: "+apiKey.Name)
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"api_key": apiKey,
+		"raw_key": rawKey,
+	})
+}
+
+// DeleteApiKey 删除 API 密钥
+func (h *Handler) DeleteApiKey(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if err := h.services.ApiKey.Delete(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(204)
+}
+
+// RegenerateApiKey 重新生成 API 密钥
+func (h *Handler) RegenerateApiKey(c *fiber.Ctx) error {
+	id := c.Params("id")
+	apiKey, rawKey, err := h.services.ApiKey.Regenerate(id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"api_key": apiKey,
+		"raw_key": rawKey,
+	})
+}
+
+// ListMyApiKeys 列出当前用户的 API 密钥
+func (h *Handler) ListMyApiKeys(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	keys, err := h.services.ApiKey.List(userID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(keys)
+}
+
+// ============================================
+// IM 自助绑定 Handlers - 员工扫码绑定 IM 渠道
+// ============================================
+
+// ListIMPlatforms 列出可绑定的 IM 平台（含绑定说明和二维码信息）
+func (h *Handler) ListIMPlatforms(c *fiber.Ctx) error {
+	platforms, err := h.services.IM.ListAvailablePlatforms()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(platforms)
+}
+
+// RequestIMBinding 请求 IM 绑定（生成 token，返回二维码/验证信息）
+func (h *Handler) RequestIMBinding(c *fiber.Ctx) error {
+	type Request struct {
+		ImConfigID string `json:"im_config_id"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	userID := c.Locals("user_id").(string)
+
+	result, err := h.services.IM.GenerateBindingToken(userID, req.ImConfigID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(result)
+}
+
+// ConfirmIMBinding IM 回调确认绑定（由 IM 平台回调，通过 token 匹配）
+func (h *Handler) ConfirmIMBinding(c *fiber.Ctx) error {
+	type ConfirmRequest struct {
+		Token      string `json:"token"`
+		ImUserID   string `json:"im_user_id"`
+		ImUserName string `json:"im_user_name"`
+	}
+	var req ConfirmRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	binding, err := h.services.IM.ConfirmBinding(req.Token, req.ImUserID, req.ImUserName)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"success":  true,
+		"message":  "IM 绑定成功",
+		"platform": binding.ImConfigID,
+	})
+}
+
+// GetSystemConfig 获取系统配置
+func (h *Handler) GetSystemConfig(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"server": fiber.Map{
+			"port": h.config.Server.Port,
+			"mode": h.config.Server.Mode,
+		},
+		"database": fiber.Map{
+			"type":         h.config.Database.Type,
+			"host":         h.config.Database.Host,
+			"port":         h.config.Database.Port,
+			"name":         h.config.Database.Name,
+			"user":         h.config.Database.User,
+			"password":     "", // 不返回密码
+			"sslmode":      h.config.Database.SSLMode,
+			"auto_migrate": h.config.Database.AutoMigrate,
+		},
+		"security": fiber.Map{
+			"jwt": fiber.Map{
+				"expire":         h.config.Security.JWT.Expire,
+				"refresh_expire": h.config.Security.JWT.RefreshExpire,
+				"secret":         "", // 不返回密钥
+			},
+			"rate_limit": fiber.Map{
+				"enabled":             h.config.Security.RateLimit.Enabled,
+				"requests_per_minute": h.config.Security.RateLimit.RequestsPerMinute,
+			},
+			"cors": fiber.Map{
+				"allowed_origins": h.config.Security.CORS.AllowedOrigins,
+				"allowed_methods": h.config.Security.CORS.AllowedMethods,
+				"allowed_headers": h.config.Security.CORS.AllowedHeaders,
+			},
+			"https": fiber.Map{
+				"enabled":   h.config.Security.HTTPS.Enabled,
+				"cert_file": h.config.Security.HTTPS.CertFile,
+				"key_file":  h.config.Security.HTTPS.KeyFile,
+			},
+		},
+		"embedding": fiber.Map{
+			"provider":  h.config.Embedding.Provider,
+			"model":     h.config.Embedding.Model,
+			"dimension": h.config.Embedding.Dimension,
+			"store":     h.config.Embedding.StoreProvider,
+		},
+		"executor": fiber.Map{
+			"mode": h.config.Executor.Mode,
+			"embedded": fiber.Map{
+				"max_concurrent": h.config.Executor.EmbeddedConfig.MaxConcurrent,
+				"timeout":        h.config.Executor.EmbeddedConfig.Timeout,
+			},
+			"independent": fiber.Map{
+				"queue": fiber.Map{
+					"type":    h.config.Executor.IndependentConfig.Queue.Type,
+					"address": h.config.Executor.IndependentConfig.Queue.Address,
+				},
+			},
+		},
+		"update": fiber.Map{
+			"enabled":          h.config.Update.Enabled,
+			"check_interval":   h.config.Update.CheckInterval,
+			"github_repo":      h.config.Update.GithubRepo,
+			"auto_backup":      h.config.Update.AutoBackup,
+			"require_approval": h.config.Update.RequireApproval,
+		},
+		"smtp": fiber.Map{
+			"enabled":    h.config.SMTP.Enabled,
+			"host":       h.config.SMTP.Host,
+			"port":       h.config.SMTP.Port,
+			"username":   h.config.SMTP.Username,
+			"password":   "",
+			"encryption": h.config.SMTP.Encryption,
+			"from_email": h.config.SMTP.FromEmail,
+			"from_name":  h.config.SMTP.FromName,
+			"to_email":   h.config.SMTP.ToEmail,
+		},
+	})
+}
+
+// ============================================
+// 外部系统集成 - 通过 API Key 代用户操作
+// ============================================
+
+// ExternalBindIM 外部系统通过 API Key 代员工绑定 IM
+func (h *Handler) ExternalBindIM(c *fiber.Ctx) error {
+	type ExternalBindInput struct {
+		GlobalUserID string `json:"global_user_id"`
+		UserName     string `json:"user_name"`
+		ImConfigID   string `json:"im_config_id"`
+		ImUserID     string `json:"im_user_id"`
+		ImUserName   string `json:"im_user_name"`
+	}
+	var input ExternalBindInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	result, err := h.services.IM.ExternalBindUser(input.GlobalUserID, input.UserName, input.ImConfigID, input.ImUserID, input.ImUserName)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"result":  result,
+	})
+}
+
+// ExternalListUsers 外部系统查询用户列表
+func (h *Handler) ExternalListUsers(c *fiber.Ctx) error {
+	users, err := h.services.User.List()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(users)
+}
+
+// UpdateSystemConfig 更新系统配置
+func (h *Handler) UpdateSystemConfig(c *fiber.Ctx) error {
+	type SystemConfigInput struct {
+		Server *struct {
+			Port int    `json:"port"`
+			Mode string `json:"mode"`
+		} `json:"server"`
+		Database *struct {
+			Type        string `json:"type"`
+			Host        string `json:"host"`
+			Port        int    `json:"port"`
+			Name        string `json:"name"`
+			User        string `json:"user"`
+			Password    string `json:"password"`
+			SSLMode     string `json:"sslmode"`
+			AutoMigrate *bool  `json:"auto_migrate"`
+		} `json:"database"`
+		Security *struct {
+			JWT *struct {
+				Secret        string `json:"secret"`
+				Expire        string `json:"expire"`
+				RefreshExpire string `json:"refresh_expire"`
+			} `json:"jwt"`
+			RateLimit *struct {
+				Enabled           bool `json:"enabled"`
+				RequestsPerMinute int  `json:"requests_per_minute"`
+			} `json:"rate_limit"`
+			CORS *struct {
+				AllowedOrigins []string `json:"allowed_origins"`
+				AllowedMethods []string `json:"allowed_methods"`
+				AllowedHeaders []string `json:"allowed_headers"`
+			} `json:"cors"`
+			HTTPS *struct {
+				Enabled  bool   `json:"enabled"`
+				CertFile string `json:"cert_file"`
+				KeyFile  string `json:"key_file"`
+			} `json:"https"`
+		} `json:"security"`
+		Embedding *struct {
+			Provider  string `json:"provider"`
+			Model     string `json:"model"`
+			Dimension int    `json:"dimension"`
+			Store     string `json:"store"`
+		} `json:"embedding"`
+		Executor *struct {
+			Mode     string `json:"mode"`
+			Embedded *struct {
+				MaxConcurrent int    `json:"max_concurrent"`
+				Timeout       string `json:"timeout"`
+			} `json:"embedded"`
+			Independent *struct {
+				Queue *struct {
+					Type    string `json:"type"`
+					Address string `json:"address"`
+				} `json:"queue"`
+			} `json:"independent"`
+		} `json:"executor"`
+		Update *struct {
+			Enabled         bool   `json:"enabled"`
+			CheckInterval   string `json:"check_interval"`
+			GithubRepo      string `json:"github_repo"`
+			AutoBackup      bool   `json:"auto_backup"`
+			RequireApproval bool   `json:"require_approval"`
+		} `json:"update"`
+		SMTP *struct {
+			Enabled    bool   `json:"enabled"`
+			Host       string `json:"host"`
+			Port       int    `json:"port"`
+			Username   string `json:"username"`
+			Password   string `json:"password"`
+			Encryption string `json:"encryption"`
+			FromEmail  string `json:"from_email"`
+			FromName   string `json:"from_name"`
+			ToEmail    string `json:"to_email"`
+		} `json:"smtp"`
+	}
+
+	var input SystemConfigInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	changed := false
+
+	// 更新服务端配置
+	if input.Server != nil {
+		if input.Server.Port > 0 {
+			h.config.Server.Port = input.Server.Port
+			changed = true
+		}
+		if input.Server.Mode != "" {
+			h.config.Server.Mode = input.Server.Mode
+			changed = true
+		}
+	}
+
+	// 更新数据库配置
+	if input.Database != nil {
+		d := input.Database
+		if d.Type != "" {
+			h.config.Database.Type = d.Type
+			changed = true
+		}
+		if d.Host != "" {
+			h.config.Database.Host = d.Host
+			changed = true
+		}
+		if d.Port > 0 {
+			h.config.Database.Port = d.Port
+			changed = true
+		}
+		if d.Name != "" {
+			h.config.Database.Name = d.Name
+			changed = true
+		}
+		if d.User != "" {
+			h.config.Database.User = d.User
+			changed = true
+		}
+		if d.Password != "" {
+			h.config.Database.Password = d.Password
+			changed = true
+		}
+		if d.SSLMode != "" {
+			h.config.Database.SSLMode = d.SSLMode
+			changed = true
+		}
+		if d.AutoMigrate != nil {
+			h.config.Database.AutoMigrate = *d.AutoMigrate
+			changed = true
+		}
+	}
+
+	// 更新安全配置
+	if input.Security != nil {
+		s := input.Security
+		if s.JWT != nil {
+			if s.JWT.Secret != "" {
+				h.config.Security.JWT.Secret = s.JWT.Secret
+				changed = true
+			}
+			if s.JWT.Expire != "" {
+				h.config.Security.JWT.Expire = s.JWT.Expire
+				changed = true
+			}
+			if s.JWT.RefreshExpire != "" {
+				h.config.Security.JWT.RefreshExpire = s.JWT.RefreshExpire
+				changed = true
+			}
+		}
+		if s.RateLimit != nil {
+			h.config.Security.RateLimit.Enabled = s.RateLimit.Enabled
+			changed = true
+			if s.RateLimit.RequestsPerMinute > 0 {
+				h.config.Security.RateLimit.RequestsPerMinute = s.RateLimit.RequestsPerMinute
+				changed = true
+			}
+		}
+		if s.CORS != nil {
+			if len(s.CORS.AllowedOrigins) > 0 {
+				h.config.Security.CORS.AllowedOrigins = s.CORS.AllowedOrigins
+				changed = true
+			}
+			if len(s.CORS.AllowedMethods) > 0 {
+				h.config.Security.CORS.AllowedMethods = s.CORS.AllowedMethods
+				changed = true
+			}
+			if len(s.CORS.AllowedHeaders) > 0 {
+				h.config.Security.CORS.AllowedHeaders = s.CORS.AllowedHeaders
+				changed = true
+			}
+		}
+		if s.HTTPS != nil {
+			h.config.Security.HTTPS.Enabled = s.HTTPS.Enabled
+			changed = true
+			if s.HTTPS.CertFile != "" {
+				h.config.Security.HTTPS.CertFile = s.HTTPS.CertFile
+				changed = true
+			}
+			if s.HTTPS.KeyFile != "" {
+				h.config.Security.HTTPS.KeyFile = s.HTTPS.KeyFile
+				changed = true
+			}
+		}
+	}
+
+	// 更新 Embedding 配置
+	if input.Embedding != nil {
+		e := input.Embedding
+		if e.Provider != "" {
+			h.config.Embedding.Provider = e.Provider
+			changed = true
+		}
+		if e.Model != "" {
+			h.config.Embedding.Model = e.Model
+			changed = true
+		}
+		if e.Dimension > 0 {
+			h.config.Embedding.Dimension = e.Dimension
+			changed = true
+		}
+		if e.Store != "" {
+			h.config.Embedding.StoreProvider = e.Store
+			changed = true
+		}
+	}
+
+	// 更新 Executor 配置
+	if input.Executor != nil {
+		e := input.Executor
+		if e.Mode != "" {
+			h.config.Executor.Mode = e.Mode
+			changed = true
+		}
+		if e.Embedded != nil {
+			if e.Embedded.MaxConcurrent > 0 {
+				h.config.Executor.EmbeddedConfig.MaxConcurrent = e.Embedded.MaxConcurrent
+				changed = true
+			}
+			if e.Embedded.Timeout != "" {
+				h.config.Executor.EmbeddedConfig.Timeout = e.Embedded.Timeout
+				changed = true
+			}
+		}
+		if e.Independent != nil && e.Independent.Queue != nil {
+			if e.Independent.Queue.Type != "" {
+				h.config.Executor.IndependentConfig.Queue.Type = e.Independent.Queue.Type
+				changed = true
+			}
+			if e.Independent.Queue.Address != "" {
+				h.config.Executor.IndependentConfig.Queue.Address = e.Independent.Queue.Address
+				changed = true
+			}
+		}
+	}
+
+	// 更新自动更新配置
+	if input.Update != nil {
+		u := input.Update
+		h.config.Update.Enabled = u.Enabled
+		changed = true
+		if u.CheckInterval != "" {
+			h.config.Update.CheckInterval = u.CheckInterval
+			changed = true
+		}
+		if u.GithubRepo != "" {
+			h.config.Update.GithubRepo = u.GithubRepo
+			changed = true
+		}
+		h.config.Update.AutoBackup = u.AutoBackup
+		changed = true
+		h.config.Update.RequireApproval = u.RequireApproval
+		changed = true
+	}
+
+	// 更新 SMTP 配置
+	if input.SMTP != nil {
+		s := input.SMTP
+		h.config.SMTP.Enabled = s.Enabled
+		changed = true
+		if s.Host != "" {
+			h.config.SMTP.Host = s.Host
+			changed = true
+		}
+		if s.Port > 0 {
+			h.config.SMTP.Port = s.Port
+			changed = true
+		}
+		if s.Username != "" {
+			h.config.SMTP.Username = s.Username
+			changed = true
+		}
+		if s.Password != "" {
+			h.config.SMTP.Password = s.Password
+			changed = true
+		}
+		if s.Encryption != "" {
+			h.config.SMTP.Encryption = s.Encryption
+			changed = true
+		}
+		if s.FromEmail != "" {
+			h.config.SMTP.FromEmail = s.FromEmail
+			changed = true
+		}
+		if s.FromName != "" {
+			h.config.SMTP.FromName = s.FromName
+			changed = true
+		}
+		if s.ToEmail != "" {
+			h.config.SMTP.ToEmail = s.ToEmail
+			changed = true
+		}
+	}
+
+	if changed {
+		if err := config.SaveToFile(h.config, "config.yaml"); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "保存配置失败: " + err.Error()})
+		}
+		return c.JSON(fiber.Map{"message": "配置已更新，部分修改需重启服务后生效"})
+	}
+
+	return c.JSON(fiber.Map{"message": "没有需要更新的配置"})
+}
+
+// TestSMTP 测试 SMTP 配置
+func (h *Handler) TestSMTP(c *fiber.Ctx) error {
+	// 如果 SMTP 未启用，返回错误
+	if !h.config.SMTP.Enabled {
+		return c.Status(400).JSON(fiber.Map{"error": "SMTP 未启用"})
+	}
+
+	// 检查必要的配置
+	if h.config.SMTP.Host == "" || h.config.SMTP.Port == 0 || h.config.SMTP.FromEmail == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "SMTP 配置不完整"})
+	}
+
+	// 创建测试邮件
+	subject := "Wisehoof 系统 SMTP 测试"
+	body := "这是一封测试邮件，用于验证 SMTP 配置是否正确。\n\n如果收到此邮件，说明配置成功。"
+
+	// 发送测试邮件
+	err := sendTestEmail(h.config.SMTP, subject, body)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "发送测试邮件失败: " + err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"message": "测试邮件已发送"})
+}
+
+// sendTestEmail 发送测试邮件
+func sendTestEmail(cfg config.SMTPConfig, subject, body string) error {
+	// 收件人：如果配置了 to_email 则使用，否则使用 from_email 作为测试收件人
+	toEmail := cfg.ToEmail
+	if toEmail == "" {
+		toEmail = cfg.FromEmail
+	}
+
+	if toEmail == "" {
+		return fiber.NewError(400, "未配置收件人邮箱")
+	}
+
+	// 构建邮件内容
+	message := "From: " + cfg.FromName + " <" + cfg.FromEmail + ">\r\n"
+	message += "To: " + toEmail + "\r\n"
+	message += "Subject: " + subject + "\r\n"
+	message += "Content-Type: text/plain; charset=utf-8\r\n"
+	message += "\r\n"
+	message += body
+
+	// 连接 SMTP 服务器并发送
+	// 这里使用 Go 的 net/smtp 包
+	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+
+	var auth smtp.Auth
+	switch strings.ToLower(cfg.Encryption) {
+	case "ssl":
+		// SSL/TLS 直接连接
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	default:
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	}
+
+	err := smtp.SendMail(addr, auth, cfg.FromEmail, []string{toEmail}, []byte(message))
+	if err != nil {
+		return fmt.Errorf("SMTP 发送失败: %w", err)
+	}
+
+	return nil
 }

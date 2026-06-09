@@ -54,10 +54,26 @@ type SetupRequest struct {
 	// 品牌配置
 	AdminTitle string `json:"admin_title"`
 	Theme      string `json:"theme"` // light, dark
+
+	// SMTP 配置
+	SMTPEnabled    bool   `json:"smtp_enabled"`
+	SMTPHost       string `json:"smtp_host"`
+	SMTPPort       int    `json:"smtp_port"`
+	SMTPUsername   string `json:"smtp_username"`
+	SMTPPassword   string `json:"smtp_password"`
+	SMTPEncryption string `json:"smtp_encryption"`
+	SMTPFromEmail  string `json:"smtp_from_email"`
+	SMTPFromName   string `json:"smtp_from_name"`
+	SMTPToEmail    string `json:"smtp_to_email"`
 }
 
 // Setup 执行系统初始化
 func (s *SetupService) Setup(req *SetupRequest) (map[string]interface{}, error) {
+	// 检查系统是否已锁定（已初始化）
+	if IsLocked() {
+		return nil, fmt.Errorf("系统已初始化，不允许重复初始化。如需重新初始化，请删除 data/.initialized 文件")
+	}
+
 	// 1. 规范化 SQLite 数据库路径
 	dbName := req.DBName
 	if req.DBType == "sqlite" {
@@ -138,6 +154,7 @@ func (s *SetupService) Setup(req *SetupRequest) (map[string]interface{}, error) 
 		Name:         req.AdminName,
 		Email:        req.AdminEmail,
 		PasswordHash: string(hashedPassword),
+		Role:         models.RoleAdmin,
 		Status:       "active",
 		CreatedBy:    "system",
 	}
@@ -147,11 +164,42 @@ func (s *SetupService) Setup(req *SetupRequest) (map[string]interface{}, error) 
 		return nil, fmt.Errorf("创建管理员失败: %v", err)
 	}
 
-	// 保存配置到 config（这里简化处理）
-	// 实际应该保存到数据库或配置文件
-	_ = req.AdminTitle
-	_ = req.Theme
+	// 保存配置到 config.yaml
+	newCfg := config.Load()
+	newCfg.Database = config.DatabaseConfig{
+		Type:        req.DBType,
+		Host:        req.DBHost,
+		Port:        req.DBPort,
+		Name:        dbName,
+		User:        req.DBUser,
+		Password:    req.DBPassword,
+		AutoMigrate: true,
+	}
+	newCfg.Security.JWT.Secret = jwtSecret
 
+	// 保存 SMTP 配置
+	if req.SMTPHost != "" {
+		newCfg.SMTP = config.SMTPConfig{
+			Enabled:    req.SMTPEnabled,
+			Host:       req.SMTPHost,
+			Port:       req.SMTPPort,
+			Username:   req.SMTPUsername,
+			Password:   req.SMTPPassword,
+			Encryption: req.SMTPEncryption,
+			FromEmail:  req.SMTPFromEmail,
+			FromName:   req.SMTPFromName,
+			ToEmail:    req.SMTPToEmail,
+		}
+	}
+
+	if err := config.SaveToFile(newCfg, "config.yaml"); err != nil {
+		return nil, fmt.Errorf("保存配置失败: %v", err)
+	}
+
+	// 创建锁文件，锁定系统
+	if err := LockSystem(); err != nil {
+		return nil, fmt.Errorf("创建锁文件失败: %v", err)
+	}
 	return map[string]interface{}{
 		"success": true,
 		"message": "系统初始化完成",
@@ -174,4 +222,35 @@ func generateUUID() string {
 	bytes := make([]byte, 16)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
+}
+
+// Lock file path for system initialization lock
+const lockFilePath = "data/.initialized"
+
+// IsLocked 检查系统是否已锁定（已初始化）
+func IsLocked() bool {
+	_, err := os.Stat(lockFilePath)
+	return err == nil
+}
+
+// LockSystem creates lock file to lock the system
+func LockSystem() error {
+	if err := os.MkdirAll("data", 0755); err != nil {
+		return fmt.Errorf("failed to create data dir: %v", err)
+	}
+	if err := os.WriteFile(lockFilePath, []byte("locked"), 0644); err != nil {
+		return fmt.Errorf("failed to create lock file: %v", err)
+	}
+	return nil
+}
+
+// UnlockSystem removes lock file to allow re-initialization
+func UnlockSystem() error {
+	if !IsLocked() {
+		return nil
+	}
+	if err := os.Remove(lockFilePath); err != nil {
+		return fmt.Errorf("failed to remove lock file: %v", err)
+	}
+	return nil
 }

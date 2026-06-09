@@ -18,11 +18,14 @@ import (
 )
 
 type AgentEngine struct {
-	db        *gorm.DB
-	config    *config.Config
-	skills    *SkillManager
-	providers *ProviderManager
-	memory    *MemoryManager
+	db         *gorm.DB
+	config     *config.Config
+	skills     *SkillManager
+	providers  *ProviderManager
+	memory     *MemoryManager
+	experience *ExperienceManager
+	env        *EnvManager
+	scripts    *ScriptManager
 }
 
 type ChatRequest struct {
@@ -63,11 +66,14 @@ type PlanStep struct {
 
 func NewAgentEngine(db *gorm.DB, cfg *config.Config) *AgentEngine {
 	return &AgentEngine{
-		db:        db,
-		config:    cfg,
-		skills:    NewSkillManager(db),
-		providers: NewProviderManager(db),
-		memory:    NewMemoryManager(db),
+		db:         db,
+		config:     cfg,
+		skills:     NewSkillManager(db),
+		providers:  NewProviderManager(db),
+		memory:     NewMemoryManager(db),
+		experience: NewExperienceManager(db),
+		env:        NewEnvManager(),
+		scripts:    NewScriptManager(db),
 	}
 }
 
@@ -396,35 +402,35 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 			}, nil
 		}
 		dataSourceID = ds.ID
-		}
+	}
 
-		// 获取活跃的 LLM Provider
-		provider, err := e.providers.GetActiveProvider()
-		if err != nil || provider == nil {
-			return &ChatResponse{
-				Message: "请先在管理后台配置 LLM Provider 后再使用查询功能",
-				Data: map[string]interface{}{
-					"type":    "text2sql",
-					"action":  "configure_provider",
-					"message": "未配置 LLM Provider，请先在 Provider 管理中添加配置",
-				},
-			}, nil
-		}
+	// 获取活跃的 LLM Provider
+	provider, err := e.providers.GetActiveProvider()
+	if err != nil || provider == nil {
+		return &ChatResponse{
+			Message: "请先在管理后台配置 LLM Provider 后再使用查询功能",
+			Data: map[string]interface{}{
+				"type":    "text2sql",
+				"action":  "configure_provider",
+				"message": "未配置 LLM Provider，请先在 Provider 管理中添加配置",
+			},
+		}, nil
+	}
 
-		// 创建 LLM Client
-		client, err := llm.NewClient(provider)
-		if err != nil {
-			return &ChatResponse{
-				Message: fmt.Sprintf("创建 LLM 客户端失败: %v", err),
-				Data: map[string]interface{}{
-					"type":  "text2sql",
-					"error": err.Error(),
-				},
-			}, nil
-		}
+	// 创建 LLM Client
+	client, err := llm.NewClient(provider)
+	if err != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("创建 LLM 客户端失败: %v", err),
+			Data: map[string]interface{}{
+				"type":  "text2sql",
+				"error": err.Error(),
+			},
+		}, nil
+	}
 
-		// 创建 Text2SQL 实例
-		t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	// 创建 Text2SQL 实例
+	t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
 	if err != nil {
 		return &ChatResponse{
 			Message: fmt.Sprintf("连接数据源失败: %v", err),
@@ -467,11 +473,11 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 	return &ChatResponse{
 		Message: responseMessage,
 		Data: map[string]interface{}{
-			"type":          "text2sql",
-			"sql":           result.SQL,
-			"columns":       result.Columns,
-			"rows":          result.Rows,
-			"row_count":     result.RowCount,
+			"type":           "text2sql",
+			"sql":            result.SQL,
+			"columns":        result.Columns,
+			"rows":           result.Rows,
+			"row_count":      result.RowCount,
 			"execution_time": result.ExecutionTime,
 			"data_source_id": dataSourceID,
 		},
@@ -582,11 +588,11 @@ func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatR
 	return &ChatResponse{
 		Message: responseMessage,
 		Data: map[string]interface{}{
-			"type":          "employee",
-			"sql":           result.SQL,
-			"columns":       result.Columns,
-			"rows":          result.Rows,
-			"row_count":     result.RowCount,
+			"type":           "employee",
+			"sql":            result.SQL,
+			"columns":        result.Columns,
+			"rows":           result.Rows,
+			"row_count":      result.RowCount,
 			"execution_time": result.ExecutionTime,
 			"data_source_id": dataSourceID,
 		},
@@ -843,9 +849,9 @@ func (e *AgentEngine) executeMD2PDF(message string, user *UserContext) (*ChatRes
 	return &ChatResponse{
 		Message: message,
 		Data: map[string]interface{}{
-			"type":   "md2pdf",
-			"markdown": markdownContent,
-			"action": "convert_to_pdf",
+			"type":         "md2pdf",
+			"markdown":     markdownContent,
+			"action":       "convert_to_pdf",
 			"api_endpoint": "/api/v1/admin/docs/md2pdf",
 		},
 		SkillUsed: "skill_md2pdf",
@@ -879,7 +885,7 @@ type UserContext struct {
 	Status          string
 	Groups          []GroupContext
 	AvailableSkills []string
-	Context         map[string]interface{}  // 额外的上下文数据
+	Context         map[string]interface{} // 额外的上下文数据
 }
 
 func (u *UserContext) getGroupIDs() []string {
@@ -981,9 +987,9 @@ func (m *ProviderManager) CallLLM(ctx context.Context, provider *models.Provider
 
 // SkillManager Skills 管理
 type SkillManager struct {
-	db         *gorm.DB
-	embedder   embedding.Embedder
-	store      vectorstore.Store
+	db       *gorm.DB
+	embedder embedding.Embedder
+	store    vectorstore.Store
 }
 
 func NewSkillManager(db *gorm.DB) *SkillManager {

@@ -2,6 +2,7 @@ package router
 
 import (
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -82,33 +83,86 @@ func Setup(app *fiber.App, h *handler.Handler, cfg *config.Config, uiFS http.Fil
 	}
 }
 
+// serveEmbeddedFile 从嵌入 FS 输出文件，并按扩展名设置正确 MIME
+func serveEmbeddedFile(c *fiber.Ctx, uiFS http.FileSystem, filePath string) error {
+	filePath = strings.TrimPrefix(filePath, "/")
+	if filePath == "" {
+		filePath = "index.html"
+	}
+
+	f, err := uiFS.Open(filePath)
+	if err == nil {
+		defer f.Close()
+
+		stat, statErr := f.Stat()
+		if statErr != nil {
+			return c.Status(500).SendString("Failed to read embedded file metadata")
+		}
+		if stat.IsDir() {
+			return serveEmbeddedFile(c, uiFS, strings.TrimSuffix(filePath, "/")+"/index.html")
+		}
+		setEmbeddedContentType(c, filePath)
+		return c.SendStream(f, int(stat.Size()))
+	}
+
+	if !shouldFallbackToSPA(filePath) {
+		return c.Status(404).SendString("Not Found")
+	}
+
+	index, err := uiFS.Open("index.html")
+	if err != nil {
+		return c.Status(404).SendString("Not Found")
+	}
+	defer index.Close()
+	stat, statErr := index.Stat()
+	if statErr != nil {
+		return c.Status(500).SendString("Failed to read embedded index metadata")
+	}
+	c.Set("Content-Type", "text/html; charset=utf-8")
+	return c.SendStream(index, int(stat.Size()))
+}
+
+func shouldFallbackToSPA(filePath string) bool {
+	filePath = strings.TrimPrefix(filePath, "/")
+	if filePath == "" || filePath == "index.html" {
+		return true
+	}
+	if strings.HasPrefix(filePath, "_app/") {
+		return false
+	}
+	return filepath.Ext(filePath) == ""
+}
+
+func setEmbeddedContentType(c *fiber.Ctx, filePath string) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext == ".js" || ext == ".mjs" {
+		c.Set("Content-Type", "application/javascript; charset=utf-8")
+		return
+	}
+	if ext == ".wasm" {
+		c.Set("Content-Type", "application/wasm")
+		return
+	}
+	if ext == ".html" || ext == ".htm" {
+		c.Set("Content-Type", "text/html; charset=utf-8")
+		return
+	}
+	if contentType := mime.TypeByExtension(ext); contentType != "" {
+		c.Set("Content-Type", contentType)
+	}
+}
+
 // registerEmbeddedFrontend 注册嵌入模式前端路由
 func registerEmbeddedFrontend(app *fiber.App, uiFS http.FileSystem) {
+	// /_app 静态资源在根路径下也需要提供（base 为空时 SvelteKit 引用根路径资源）
+	app.Use("/_app", func(c *fiber.Ctx) error {
+		return serveEmbeddedFile(c, uiFS, c.Path())
+	})
+
 	// SPA fallback: 非文件路径返回 index.html
 	app.Use("/admin", func(c *fiber.Ctx) error {
-		// c.Path() = "/admin/xxx" → 去掉前缀得到 "xxx"
-		// c.Path() = "/admin" → 返回 ""
 		filePath := strings.TrimPrefix(c.Path(), "/admin")
-		filePath = strings.TrimPrefix(filePath, "/")
-		if filePath == "" {
-			filePath = "index.html"
-		}
-
-		f, err := uiFS.Open(filePath)
-		if err != nil {
-			// SPA fallback
-			index, err := uiFS.Open("index.html")
-			if err != nil {
-				return c.Status(404).SendString("Not Found")
-			}
-			defer index.Close()
-			stat, _ := index.Stat()
-			c.Set("Content-Type", "text/html")
-			return c.SendStream(index, int(stat.Size()))
-		}
-		defer f.Close()
-		stat, _ := f.Stat()
-		return c.SendStream(f, int(stat.Size()))
+		return serveEmbeddedFile(c, uiFS, filePath)
 	})
 
 	// /docs 和 /im 重定向到 SPA 对应路由
@@ -119,17 +173,15 @@ func registerEmbeddedFrontend(app *fiber.App, uiFS http.FileSystem) {
 
 	// /setup 初始化向导
 	app.Get("/setup", func(c *fiber.Ctx) error {
-		f, err := uiFS.Open("setup/index.html")
-		if err != nil {
-			return c.Status(404).SendString("Setup page not found")
-		}
-		defer f.Close()
-		stat, _ := f.Stat()
-		c.Set("Content-Type", "text/html")
-		return c.SendStream(f, int(stat.Size()))
+		return serveEmbeddedFile(c, uiFS, "setup/index.html")
 	})
 	app.Get("/setup/*", func(c *fiber.Ctx) error {
 		return c.Redirect("/setup")
+	})
+
+	// /open/u/login 登录页面 fallback 到前端 index.html
+	app.Get("/open/u/login", func(c *fiber.Ctx) error {
+		return serveEmbeddedFile(c, uiFS, "index.html")
 	})
 }
 
@@ -138,9 +190,16 @@ func registerFilesystemFrontend(app *fiber.App) {
 	staticRoot := findStaticRoot()
 	log.Printf("静态文件根目录: %s", staticRoot)
 
+	// /_app 静态资源在根路径下也需要提供
+	app.Static("/_app", staticRoot+"/_app")
+
 	// SPA
 	app.Static("/admin", staticRoot)
 	app.Get("/admin/*", func(c *fiber.Ctx) error {
+		filePath := strings.TrimPrefix(c.Path(), "/admin")
+		if !shouldFallbackToSPA(filePath) {
+			return c.Status(404).SendString("Not Found")
+		}
 		return c.SendFile(filepath.Join(staticRoot, "index.html"))
 	})
 
@@ -152,6 +211,11 @@ func registerFilesystemFrontend(app *fiber.App) {
 	})
 	app.Get("/setup/*", func(c *fiber.Ctx) error {
 		return c.SendFile(filepath.Join(setupRoot, "index.html"))
+	})
+
+	// /open/u/login 登录页面
+	app.Get("/open/u/login", func(c *fiber.Ctx) error {
+		return c.SendFile(filepath.Join(staticRoot, "index.html"))
 	})
 
 	// 重定向

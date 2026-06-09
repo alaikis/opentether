@@ -6,18 +6,19 @@ import (
 )
 
 type Services struct {
-	Auth          *AuthService
-	User          *UserService
-	UserGroup     *UserGroupService
-	Provider      *ProviderService
-	DataSource    *DataSourceService
-	Skill         *SkillService
-	Task          *TaskService
-	IM            *IMService
-	Log           *LogService
-	Agent         *AgentService
-	Conversation  *ConversationService
+	Auth         *AuthService
+	User         *UserService
+	UserGroup    *UserGroupService
+	Provider     *ProviderService
+	DataSource   *DataSourceService
+	Skill        *SkillService
+	Task         *TaskService
+	IM           *IMService
+	Log          *LogService
+	Agent        *AgentService
+	Conversation *ConversationService
 	// 新增服务
+	ApiKey        *ApiKeyService            // API 密钥管理
 	SkillMarkdown *SkillFromMarkdownService // MD 文件解析生成 Skill
 	MCP           *MCPService               // MCP 协议集成
 	PDF           *PDFService               // PDF 报表生成
@@ -26,18 +27,19 @@ type Services struct {
 
 func NewServices(db *gorm.DB, cfg *config.Config) *Services {
 	return &Services{
-		Auth:          NewAuthService(db, cfg),
-		User:          NewUserService(db),
-		UserGroup:     NewUserGroupService(db),
-		Provider:      NewProviderService(db),
-		DataSource:    NewDataSourceService(db, nil), // nil - LLM client not available in service layer
-		Skill:         NewSkillService(db),
-		Task:          NewTaskService(db, cfg),
-		IM:            NewIMService(db),
-		Log:           NewLogService(db),
-		Agent:         NewAgentService(db, cfg),
-		Conversation:  NewConversationService(db),
+		Auth:         NewAuthService(db, cfg),
+		User:         NewUserService(db),
+		UserGroup:    NewUserGroupService(db),
+		Provider:     NewProviderService(db),
+		DataSource:   NewDataSourceService(db, nil), // nil - LLM client not available in service layer
+		Skill:        NewSkillService(db),
+		Task:         NewTaskService(db, cfg),
+		IM:           NewIMService(db),
+		Log:          NewLogService(db),
+		Agent:        NewAgentService(db, cfg),
+		Conversation: NewConversationService(db),
 		// 新增服务初始化
+		ApiKey:        NewApiKeyService(db),
 		SkillMarkdown: NewSkillFromMarkdownService(db),
 		MCP:           NewMCPService(db),
 		PDF:           NewPDFService(),

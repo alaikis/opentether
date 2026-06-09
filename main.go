@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,8 +25,47 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-//go:embed admin-ui/build
+//go:embed all:admin-ui/build
 var adminUI embed.FS
+
+func mustAdminUIFileSystem() http.FileSystem {
+	subFS, err := fs.Sub(adminUI, "admin-ui/build")
+	if err != nil {
+		log.Fatalf("embedded admin UI root not found: %v", err)
+	}
+
+	requiredFiles := []string{
+		"index.html",
+		"setup/index.html",
+		"_app/version.json",
+	}
+	for _, file := range requiredFiles {
+		if _, err := fs.Stat(subFS, file); err != nil {
+			log.Fatalf("embedded admin UI missing required file %q: %v", file, err)
+		}
+	}
+
+	if ok, err := hasEmbeddedFile(subFS, "_app/immutable/entry", ".js"); err != nil {
+		log.Fatalf("failed to inspect embedded admin UI entry assets: %v", err)
+	} else if !ok {
+		log.Fatalf("embedded admin UI missing SvelteKit entry JavaScript under _app/immutable/entry; ensure //go:embed uses all:admin-ui/build and rebuild the frontend before go build")
+	}
+
+	return http.FS(subFS)
+}
+
+func hasEmbeddedFile(root fs.FS, dir string, ext string) (bool, error) {
+	entries, err := fs.ReadDir(root, dir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ext) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 func main() {
 	// Load configuration
@@ -75,10 +115,11 @@ func main() {
 	// CORS
 	app.Use(middleware.CORS(cfg.Security.CORS))
 
+	// API Key 认证中间件（在 JWT 之前，允许外部系统用 API Key 替代 Bearer Token）
+	app.Use(middleware.ApiKeyAuth(services.ApiKey))
+
 	// Setup routes (embedded mode - binary contains admin-ui/build)
-	// 创建子文件系统，根路径指向 admin-ui/build/
-	subFS, _ := fs.Sub(adminUI, "admin-ui/build")
-	router.Setup(app, handlers, cfg, http.FS(subFS), db, true)
+	router.Setup(app, handlers, cfg, mustAdminUIFileSystem(), db, true)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

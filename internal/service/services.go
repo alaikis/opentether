@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/alaikis/opentether/internal/agent"
@@ -30,6 +31,10 @@ func NewAuthService(db *gorm.DB, cfg *config.Config) *AuthService {
 }
 
 func (s *AuthService) Login(username, password string) (string, error) {
+	if s.db == nil {
+		return "", errors.New("database not initialized, please complete setup first")
+	}
+
 	var user models.User
 
 	// Try to find by email or global_user_id
@@ -51,7 +56,11 @@ func (s *AuthService) Login(username, password string) (string, error) {
 
 	// 设置默认角色
 	if user.Role == "" {
-		user.Role = models.RoleUser
+		if user.CreatedBy == "system" {
+			user.Role = models.RoleAdmin
+		} else {
+			user.Role = models.RoleUser
+		}
 	}
 
 	// 更新最后登录时间
@@ -67,6 +76,9 @@ func (s *AuthService) Login(username, password string) (string, error) {
 }
 
 func (s *AuthService) RefreshToken(tokenString string) (string, error) {
+	if s.db == nil {
+		return "", errors.New("database not initialized, please complete setup first")
+	}
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return []byte(s.cfg.Security.JWT.Secret), nil
 	})
@@ -89,7 +101,11 @@ func (s *AuthService) RefreshToken(tokenString string) (string, error) {
 
 	// 设置默认角色
 	if user.Role == "" {
-		user.Role = models.RoleUser
+		if user.CreatedBy == "system" {
+			user.Role = models.RoleAdmin
+		} else {
+			user.Role = models.RoleUser
+		}
 	}
 
 	return s.generateToken(user.ID, user.GlobalUserID, user.Name, user.Role)
@@ -350,7 +366,7 @@ func (s *ProviderService) Test(id string) (map[string]interface{}, error) {
 	}, nil
 }
 
-	// Placeholder implementations for other services
+// Placeholder implementations for other services
 type DataSourceService struct {
 	db        *gorm.DB
 	llmClient llm.Client
@@ -489,10 +505,10 @@ func (s *DataSourceService) Analyze(id string) (map[string]interface{}, error) {
 
 	// 5. 构建返回结果
 	result := map[string]interface{}{
-		"success":         true,
-		"message":         "分析完成",
-		"tables":          tables,
-		"relations":       aiRelations,
+		"success":            true,
+		"message":            "分析完成",
+		"tables":             tables,
+		"relations":          aiRelations,
 		"existing_relations": existingRelations,
 	}
 
@@ -501,7 +517,7 @@ func (s *DataSourceService) Analyze(id string) (map[string]interface{}, error) {
 	relationsJSON, _ := json.Marshal(aiRelations)
 
 	updates := map[string]interface{}{
-		"schema_info":      string(schemaJSON),
+		"schema_info":     string(schemaJSON),
 		"table_relations": string(relationsJSON),
 	}
 	s.db.Model(ds).Updates(updates)
@@ -997,42 +1013,146 @@ func NewAgentService(db *gorm.DB, cfg *config.Config) *AgentService {
 }
 
 func (s *AgentService) Chat(userID, message, conversationID string) (map[string]interface{}, error) {
-	// TODO: Implement actual chat logic with AI Agent
+	// 创建或获取会话
+	conv, err := s.getOrCreateConversation(userID, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("会话管理失败: %w", err)
+	}
+
+	// 存储用户消息
+	userMsg := models.Message{
+		ConversationID: conv.ID,
+		Role:           "user",
+		Content:        message,
+		Metadata:       "{}",
+	}
+	if createErr := s.db.Create(&userMsg).Error; createErr != nil {
+		return nil, fmt.Errorf("保存消息失败: %w", createErr)
+	}
+
+	// 初始化 AgentEngine 并执行 Agentic Loop
+	engine := agent.NewAgentEngine(s.db, s.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), agent.LoopTimeout)
+	defer cancel()
+
+	// 获取用户上下文
+	var user models.User
+	if err := s.db.Preload("Groups").First(&user, userID).Error; err != nil {
+		return nil, fmt.Errorf("获取用户失败: %w", err)
+	}
+
+	agentUser := &agent.UserContext{
+		UserID:       user.ID,
+		GlobalUserID: user.GlobalUserID,
+		Name:         user.Name,
+		Department:   user.Department,
+		Status:       user.Status,
+	}
+
+	for _, g := range user.Groups {
+		agentUser.Groups = append(agentUser.Groups, agent.GroupContext{
+			ID:              g.ID,
+			Name:            g.GroupName,
+			Code:            g.GroupCode,
+			DataAccessScope: g.DataAccessScope,
+		})
+	}
+
+	// 获取可用 Skills
+	var skills []models.Skill
+	s.db.Where("enabled = ?", true).Find(&skills)
+	for _, sk := range skills {
+		agentUser.AvailableSkills = append(agentUser.AvailableSkills, "skill_"+sk.SkillType)
+	}
+
+	// 执行 Agentic Loop
+	resp, loopErr := engine.ExecuteLoop(ctx, agentUser, message, conv.ID)
+
+	// 存储 AI 回复
+	aiMsg := models.Message{
+		ConversationID: conv.ID,
+		Role:           "assistant",
+		Content:        resp.Message,
+		TokenCount:     resp.TokensUsed,
+		Metadata:       fmt.Sprintf(`{"skill_used":"%s","iterations":%v}`, resp.SkillUsed, resp.Data["iterations"]),
+	}
+	s.db.Create(&aiMsg)
+
+	// 更新会话标题
+	if conv.Title == "" || conv.Title == "新对话" {
+		title := message
+		if len([]rune(title)) > 30 {
+			title = string([]rune(title)[:30]) + "..."
+		}
+		s.db.Model(&conv).Update("title", title)
+	}
+
+	if loopErr != nil {
+		return map[string]interface{}{
+			"message":         resp.Message,
+			"conversation_id": conv.ID,
+			"skill_used":      resp.SkillUsed,
+		}, loopErr
+	}
+
 	return map[string]interface{}{
-		"message":         "Echo: " + message,
-		"conversation_id": conversationID,
-		"skill_used":      "chat",
+		"message":         resp.Message,
+		"conversation_id": conv.ID,
+		"skill_used":      resp.SkillUsed,
+		"tokens":          resp.TokensUsed,
+		"data":            resp.Data,
 	}, nil
 }
 
 // ChatStream sends a streaming chat response
 // Returns a channel that yields response chunks
 func (s *AgentService) ChatStream(userID, message, conversationID string) (<-chan string, error) {
-	// Get the active LLM provider
+	// 创建或获取会话
+	conv, err := s.getOrCreateConversation(userID, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("会话管理失败: %w", err)
+	}
+
+	// 存储用户消息
+	userMsg := models.Message{
+		ConversationID: conv.ID,
+		Role:           "user",
+		Content:        message,
+		Metadata:       "{}",
+	}
+	s.db.Create(&userMsg)
+
+	// 获取活跃的 LLM 提供商
 	var provider models.Provider
 	if err := s.db.Where("enabled = ?", true).Order("priority ASC").First(&provider).Error; err != nil {
 		return nil, fmt.Errorf("no active provider: %w", err)
 	}
 
-	// Import the llm package
+	// Get the llm package
 	llmClient, err := llm.NewClient(&provider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM client: %w", err)
 	}
 
+	// 构建消息历史
+	history, _ := s.getConversationHistory(conv.ID, 20)
+	llmMessages := s.buildLLMMessages(history, message)
+
 	// Create a channel for streaming responses
-	ch := make(chan string, 10)
+	ch := make(chan string, 20)
+
+	// Collect full response for saving
+	var fullResponse strings.Builder
 
 	// Start streaming in a goroutine
 	go func() {
 		defer close(ch)
 
 		resp, err := llmClient.ChatCompletionStream(nil, llm.ChatRequest{
-			Model: provider.Model,
-			Messages: []llm.Message{
-				{Role: "user", Content: message},
-			},
-			MaxTokens:   2048,
+			Model:       provider.Model,
+			Messages:    llmMessages,
+			MaxTokens:   4096,
 			Temperature: 0.7,
 		})
 
@@ -1043,15 +1163,95 @@ func (s *AgentService) ChatStream(userID, message, conversationID string) (<-cha
 
 		// Stream chunks from the response
 		for chunk := range resp.Chunks {
+			fullResponse.WriteString(chunk)
 			ch <- chunk
 		}
 
 		if err := <-resp.Err; err != nil {
 			ch <- fmt.Sprintf("error: %v", err)
+			return
+		}
+
+		// 存储 AI 回复
+		aiMsg := models.Message{
+			ConversationID: conv.ID,
+			Role:           "assistant",
+			Content:        fullResponse.String(),
+			Metadata:       fmt.Sprintf(`{"model":"%s"}`, provider.Model),
+		}
+		s.db.Create(&aiMsg)
+
+		// 更新会话标题
+		if conv.Title == "" || conv.Title == "新对话" {
+			title := message
+			if len([]rune(title)) > 30 {
+				title = string([]rune(title)[:30]) + "..."
+			}
+			s.db.Model(&conv).Update("title", title)
 		}
 	}()
 
 	return ch, nil
+}
+
+// getOrCreateConversation 获取或创建会话
+func (s *AgentService) getOrCreateConversation(userID, conversationID string) (*models.Conversation, error) {
+	if conversationID != "" {
+		var conv models.Conversation
+		if err := s.db.Where("id = ? AND user_id = ?", conversationID, userID).First(&conv).Error; err == nil {
+			return &conv, nil
+		}
+	}
+
+	// 创建新会话
+	conv := models.Conversation{
+		UserID: userID,
+		Title:  "新对话",
+		Source: "web",
+	}
+	if err := s.db.Create(&conv).Error; err != nil {
+		return nil, err
+	}
+	return &conv, nil
+}
+
+// getConversationHistory 获取最近 N 条消息历史
+func (s *AgentService) getConversationHistory(conversationID string, limit int) ([]models.Message, error) {
+	var messages []models.Message
+	err := s.db.Where("conversation_id = ?", conversationID).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&messages).Error
+	return messages, err
+}
+
+// buildLLMMessages 构建 LLM 消息列表（含历史 + 当前消息）
+func (s *AgentService) buildLLMMessages(history []models.Message, currentMessage string) []llm.Message {
+	// 系统提示词
+	messages := []llm.Message{
+		{
+			Role:    "system",
+			Content: "你是 OpenTether AI 助手，一个企业级 AI Agent。请用中文回答用户问题，保持专业、准确、简洁。你可以帮助用户查询数据、生成报表、执行任务。",
+		},
+	}
+
+	// 注入历史消息（最多 20 条）
+	startIdx := 0
+	if len(history) > 20 {
+		startIdx = len(history) - 20
+	}
+	for _, msg := range history[startIdx:] {
+		role := msg.Role
+		if role != "user" && role != "assistant" && role != "system" {
+			role = "user"
+		}
+		messages = append(messages, llm.Message{
+			Role:    role,
+			Content: msg.Content,
+		})
+	}
+
+	return messages
 }
 
 type ConversationService struct {

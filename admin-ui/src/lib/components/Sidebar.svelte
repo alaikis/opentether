@@ -1,5 +1,6 @@
 <script lang="ts">
     import { page } from "$app/stores";
+    import { sidebarCollapsed } from "$lib/stores/ui";
     import type { ComponentType } from "svelte";
 
     export let items: {
@@ -8,7 +9,6 @@
         icon: ComponentType;
         exact?: boolean;
     }[] = [];
-    export let collapsed = false;
 
     function isActive(item: { href: string; exact?: boolean }): boolean {
         const current = $page.url.pathname;
@@ -18,7 +18,7 @@
 </script>
 
 <aside
-    class="fixed left-0 top-0 z-40 h-screen bg-gradient-to-b from-primary-950 to-primary-900 text-white transition-all duration-300 flex flex-col {collapsed
+    class="fixed left-0 top-0 z-40 h-screen bg-gradient-to-b from-primary-950 to-primary-900 text-white transition-all duration-300 flex flex-col {$sidebarCollapsed
         ? 'w-16'
         : 'w-64'}"
 >
@@ -31,7 +31,7 @@
         >
             OT
         </div>
-        {#if !collapsed}
+        {#if !$sidebarCollapsed}
             <span class="font-semibold text-base truncate">OpenTether</span>
         {/if}
     </div>
@@ -42,12 +42,12 @@
             <a
                 href={item.href}
                 class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200
-					{isActive(item)
+                    {isActive(item)
                     ? 'bg-white/15 text-white font-medium'
                     : 'text-white/60 hover:text-white hover:bg-white/10'}"
             >
                 <svelte:component this={item.icon} class="w-5 h-5 shrink-0" />
-                {#if !collapsed}
+                {#if !$sidebarCollapsed}
                     <span class="truncate">{item.label}</span>
                 {/if}
             </a>
@@ -57,15 +57,13 @@
     <!-- Footer -->
     <div class="shrink-0 border-t border-white/10 p-3">
         <button
-            on:click={() => (collapsed = !collapsed)}
+            on:click={() => sidebarCollapsed.toggle()}
             class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-all text-xs"
         >
-            <span
-                class="i-lucide-chevron-left text-lg {collapsed
-                    ? 'rotate-180'
-                    : ''}">◀</span
+            <span class="text-lg {$sidebarCollapsed ? 'rotate-180' : ''}"
+                >◀</span
             >
-            {#if !collapsed}<span>收起菜单</span>{/if}
+            {#if !$sidebarCollapsed}<span>收起菜单</span>{/if}
         </button>
     </div>
 </aside>

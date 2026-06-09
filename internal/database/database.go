@@ -65,11 +65,92 @@ func Migrate(db *gorm.DB) error {
 		&models.AuditLog{},
 		&models.ScheduledTask{},
 		&models.TaskExecution{},
+		&models.ApiKey{},
+		&models.IMBindingToken{},
+		&models.AgentTask{},
+		&models.AgentPairing{},
+		&models.AgentExperience{},
+		&models.UserMemory{},
+		&models.GroupMemory{},
+		&models.AgentScript{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
 	}
 
+	// 注册内置系统 Skills
+	seedSystemSkills(db)
+
 	log.Println("Database migrations completed successfully")
 	return nil
+}
+
+// seedSystemSkills 注册内置系统 Skills（首次启动时自动创建）
+func seedSystemSkills(db *gorm.DB) {
+	systemSkills := []struct {
+		Name        string
+		SkillType   string
+		Description string
+		Keywords    string
+		Config      string
+	}{
+		{
+			Name:        "通用对话",
+			SkillType:   "chat",
+			Description: "通用对话能力，回答各类问题、提供建议、解释概念",
+			Keywords:    "对话,聊天,问答,帮助,解释,建议,分析",
+			Config:      `{"builtin":true,"tool":"chat"}`,
+		},
+		{
+			Name:        "数据查询",
+			SkillType:   "text2sql",
+			Description: "将自然语言转为 SQL 查询数据库。支持多步查询、数据分析、报表生成",
+			Keywords:    "查询,SQL,数据,统计,报表,分析,排名,趋势,销售额,业绩,库存",
+			Config:      `{"builtin":true,"tool":"text2sql"}`,
+		},
+		{
+			Name:        "员工查询",
+			SkillType:   "employee_query",
+			Description: "查询员工信息、部门结构、职位分布等",
+			Keywords:    "员工,部门,职位,人事,考勤,绩效,入职,工龄",
+			Config:      `{"builtin":true,"tool":"employee_query"}`,
+		},
+		{
+			Name:        "环境管理",
+			SkillType:   "env_setup",
+			Description: "安装 uv 包管理器并设置 Python 虚拟环境，自动检测脚本依赖并安装所需包",
+			Keywords:    "环境,安装,依赖,pip,uv,python,包管理,虚拟环境",
+			Config:      `{"builtin":true,"tool":"setup_env"}`,
+		},
+		{
+			Name:        "脚本执行",
+			SkillType:   "script_exec",
+			Description: "执行 bash 或 Python 脚本。bash 优先，Python 在 uv 环境中运行。支持数据查询、文件处理、报表生成等任务",
+			Keywords:    "脚本,执行,运行,bash,shell,python,自动化,任务",
+			Config:      `{"builtin":true,"tool":"execute_script"}`,
+		},
+	}
+
+	for _, sk := range systemSkills {
+		var count int64
+		db.Model(&models.Skill{}).Where("skill_type = ?", sk.SkillType).Count(&count)
+		if count > 0 {
+			continue // 已存在，跳过
+		}
+
+		skill := &models.Skill{
+			Name:        sk.Name,
+			SkillType:   sk.SkillType,
+			Description: sk.Description,
+			Keywords:    sk.Keywords,
+			Category:    "系统内置",
+			Enabled:     true,
+			Config:      sk.Config,
+		}
+		if err := db.Create(skill).Error; err != nil {
+			log.Printf("[Seed] 注册系统 Skill 失败 %s: %v", sk.Name, err)
+		} else {
+			log.Printf("[Seed] 注册系统 Skill: %s", sk.Name)
+		}
+	}
 }

@@ -26,9 +26,12 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	// IM 回调（由 IM 平台调用）
 	imCallback := api.Group("/im/callback")
 	imCallback.Post("/wecom", h.WeComCallback)
+	imCallback.Post("/personal-wechat", h.PersonalWeChatCallback)
 	imCallback.Post("/feishu", h.FeishuCallback)
 	imCallback.Post("/dingtalk", h.DingTalkCallback)
 	imCallback.Post("/whatsapp", h.WhatsAppCallback)
+	imCallback.Post("/whatsapp-personal", h.PersonalWhatsAppCallback)
+	imCallback.Post("/whatsapp-business", h.BusinessWhatsAppCallback)
 	imCallback.Post("/ilink", h.ILinkCallback)
 
 	// === 需认证接口 ===
@@ -116,6 +119,17 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Get("/logs/request", h.ListRequestLogs)
 	admin.Get("/logs/export", h.ExportLogs)
 
+	// === API 密钥管理 ===
+	adminAdmin.Get("/api-keys", h.ListApiKeys)
+	adminAdmin.Post("/api-keys", h.CreateApiKey)
+	adminAdmin.Delete("/api-keys/:id", h.DeleteApiKey)
+	adminAdmin.Post("/api-keys/:id/regenerate", h.RegenerateApiKey)
+
+	// 系统设置
+	adminAdmin.Get("/system/config", h.GetSystemConfig)
+	adminAdmin.Put("/system/config", h.UpdateSystemConfig)
+	adminAdmin.Post("/system/smtp/test", h.TestSMTP)
+
 	// === 用户接口 ===
 	user := api.Group("/user", auth)
 	user.Post("/chat", h.Chat)
@@ -127,4 +141,20 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	user.Get("/im/bindings", h.ListMyIMBindings)
 	user.Post("/im/bindings", h.BindIM)
 	user.Delete("/im/bindings/:id", h.UnbindIM)
+
+	// IM 自助绑定（扫码流程）
+	user.Get("/im/platforms", h.ListIMPlatforms)
+	user.Post("/im/request-bind", h.RequestIMBinding)
+
+	// 用户 API 密钥管理
+	user.Get("/api-keys", h.ListMyApiKeys)
+	user.Post("/api-keys", h.CreateApiKey)
+	user.Delete("/api-keys/:id", h.DeleteApiKey)
+	user.Post("/api-keys/:id/regenerate", h.RegenerateApiKey)
+
+	// === 外部系统集成接口（API Key 认证） ===
+	external := api.Group("/external")
+	external.Post("/bind-im", h.ExternalBindIM)
+	external.Get("/users", h.ExternalListUsers)
+	external.Post("/im/confirm-bind", h.ConfirmIMBinding)
 }
