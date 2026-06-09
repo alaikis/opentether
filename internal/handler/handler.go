@@ -105,13 +105,14 @@ func (h *Handler) AuthLogin(c *fiber.Ctx) error {
 		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.JSON(fiber.Map{"token": token})
+	return c.JSON(fiber.Map{"token": token, "refresh_token": token})
 }
 
 // AuthRefresh handles token refresh requests
 func (h *Handler) AuthRefresh(c *fiber.Ctx) error {
 	type RefreshRequest struct {
-		Token string `json:"token"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 	var req RefreshRequest
@@ -119,7 +120,13 @@ func (h *Handler) AuthRefresh(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
 	}
 
-	token, err := h.services.Auth.RefreshToken(req.Token)
+	// 接受 token 或 refresh_token 字段
+	refreshToken := req.RefreshToken
+	if refreshToken == "" {
+		refreshToken = req.Token
+	}
+
+	token, err := h.services.Auth.RefreshToken(refreshToken)
 	if err != nil {
 		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
 	}
