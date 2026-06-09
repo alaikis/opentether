@@ -60,7 +60,12 @@
 
     onMount(async () => {
         auth.checkAndSync();
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        // 等 store 更新，最多重试 5 次
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            if ($isAuthenticated) break;
+            auth.checkAndSync();
+        }
 
         if (!$isAuthenticated) {
             goto("/open/u/login");

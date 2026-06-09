@@ -113,9 +113,7 @@ function createAuthStore() {
         const token = localStorage.getItem("token");
         const refreshToken = localStorage.getItem("refreshToken");
         const user = JSON.parse(localStorage.getItem("user") || "null");
-        if (token && user) {
-          set({ token, refreshToken, user, loading: false });
-        }
+        set({ token, refreshToken, user, loading: false });
       }
     },
 
