@@ -45,9 +45,15 @@ func Auth(secret string) fiber.Handler {
 		// Store user info in context
 		c.Locals("user_id", claims["user_id"])
 		c.Locals("global_user_id", claims["global_user_id"])
-		c.Locals("role", claims["role"])        // 角色
-		c.Locals("name", claims["name"])         // 用户名
-		c.Locals("permissions", claims["permissions"]) // 权限列表
+		c.Locals("name", claims["name"])
+		c.Locals("permissions", claims["permissions"])
+
+		// role 兜底: 不存在或为空时默认为 "user"
+		role, _ := claims["role"].(string)
+		if role == "" {
+			role = "user"
+		}
+		c.Locals("role", role)
 
 		return c.Next()
 	}

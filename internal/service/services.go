@@ -91,7 +91,7 @@ func (s *AuthService) RefreshToken(tokenString string) (string, error) {
 	userID := claims["user_id"].(string)
 
 	var user models.User
-	if err := s.db.First(&user, userID).Error; err != nil {
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return "", errors.New("user not found")
 	}
 
@@ -188,7 +188,7 @@ func (s *UserService) Create(input CreateUserInput) (*models.User, error) {
 
 func (s *UserService) Update(id string, input UpdateUserInput) (*models.User, error) {
 	var user models.User
-	if err := s.db.First(&user, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&user).Error; err != nil {
 		return nil, err
 	}
 
@@ -256,7 +256,7 @@ func (s *UserGroupService) Create(input CreateUserGroupInput) (*models.UserGroup
 
 func (s *UserGroupService) Update(id string, input UpdateUserGroupInput) (*models.UserGroup, error) {
 	var group models.UserGroup
-	if err := s.db.First(&group, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&group).Error; err != nil {
 		return nil, err
 	}
 
@@ -279,7 +279,7 @@ func (s *UserGroupService) Delete(id string) error {
 
 func (s *UserGroupService) AddMembers(groupID string, userIDs []string) error {
 	var group models.UserGroup
-	if err := s.db.First(&group, groupID).Error; err != nil {
+	if err := s.db.Where("id = ?", groupID).First(&group).Error; err != nil {
 		return err
 	}
 
@@ -328,7 +328,7 @@ func (s *ProviderService) Create(input CreateProviderInput) (*models.Provider, e
 
 func (s *ProviderService) Update(id string, input UpdateProviderInput) (*models.Provider, error) {
 	var provider models.Provider
-	if err := s.db.First(&provider, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&provider).Error; err != nil {
 		return nil, err
 	}
 
@@ -355,7 +355,7 @@ func (s *ProviderService) Delete(id string) error {
 
 func (s *ProviderService) Test(id string) (map[string]interface{}, error) {
 	var provider models.Provider
-	if err := s.db.First(&provider, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&provider).Error; err != nil {
 		return nil, err
 	}
 
@@ -384,7 +384,7 @@ func (s *DataSourceService) List() ([]models.DataSource, error) {
 
 func (s *DataSourceService) GetByID(id string) (*models.DataSource, error) {
 	var ds models.DataSource
-	if err := s.db.First(&ds, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&ds).Error; err != nil {
 		return nil, err
 	}
 	return &ds, nil
@@ -408,7 +408,7 @@ func (s *DataSourceService) Create(input CreateDataSourceInput) (*models.DataSou
 
 func (s *DataSourceService) Update(id string, input UpdateDataSourceInput) (*models.DataSource, error) {
 	var ds models.DataSource
-	if err := s.db.First(&ds, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&ds).Error; err != nil {
 		return nil, err
 	}
 	updates := map[string]interface{}{
@@ -600,7 +600,7 @@ func removeSuffix(s, suffix string) string {
 // UpdateTableRelations 手动更新表关系
 func (s *DataSourceService) UpdateTableRelations(id string, relations string) error {
 	var ds models.DataSource
-	if err := s.db.First(&ds, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&ds).Error; err != nil {
 		return err
 	}
 	return s.db.Model(&ds).Update("table_relations", relations).Error
@@ -609,7 +609,7 @@ func (s *DataSourceService) UpdateTableRelations(id string, relations string) er
 // UpdateSchemaInfo 手动更新 Schema 信息
 func (s *DataSourceService) UpdateSchemaInfo(id string, schemaInfo string) error {
 	var ds models.DataSource
-	if err := s.db.First(&ds, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&ds).Error; err != nil {
 		return err
 	}
 	return s.db.Model(&ds).Update("schema_info", schemaInfo).Error
@@ -837,7 +837,7 @@ func (s *IMService) DeleteConfig(id string) error {
 
 func (s *IMService) TestConfig(id string) (map[string]interface{}, error) {
 	var cfg models.ImConfig
-	if err := s.db.First(&cfg, id).Error; err != nil {
+	if err := s.db.Where("id = ?", id).First(&cfg).Error; err != nil {
 		return nil, err
 	}
 	// 尝试创建 platform handler 来验证配置
@@ -1038,7 +1038,7 @@ func (s *AgentService) Chat(userID, message, conversationID string) (map[string]
 
 	// 获取用户上下文
 	var user models.User
-	if err := s.db.Preload("Groups").First(&user, userID).Error; err != nil {
+	if err := s.db.Preload("Groups").Where("id = ?", userID).First(&user).Error; err != nil {
 		return nil, fmt.Errorf("获取用户失败: %w", err)
 	}
 
