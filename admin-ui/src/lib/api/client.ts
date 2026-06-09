@@ -74,7 +74,7 @@ async function request<T>(
     }
     // Refresh failed, logout
     auth.logout();
-    if (browser) window.location.href = "/admin/login";
+    if (browser) window.location.href = "/open/u/login";
     throw new ApiError(401, "登录已过期，请重新登录");
   }
 

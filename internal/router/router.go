@@ -183,6 +183,10 @@ func registerEmbeddedFrontend(app *fiber.App, uiFS http.FileSystem) {
 	app.Get("/open/u/login", func(c *fiber.Ctx) error {
 		return serveEmbeddedFile(c, uiFS, "index.html")
 	})
+	// /admin/login 兼容旧链接，重定向到正确的登录页
+	app.Get("/admin/login", func(c *fiber.Ctx) error {
+		return c.Redirect("/open/u/login")
+	})
 }
 
 // registerFilesystemFrontend 注册文件系统模式前端路由（开发用）
