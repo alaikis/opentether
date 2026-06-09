@@ -20,6 +20,7 @@
         try {
             await auth.login(username, password);
             toast.success("登录成功");
+            sessionStorage.setItem("just_logged_in", "1");
             goto("/admin");
         } catch (e: any) {
             error = e.message || "登录失败";
