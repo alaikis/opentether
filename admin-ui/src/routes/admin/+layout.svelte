@@ -77,7 +77,7 @@
     });
 </script>
 
-{#if !$page.url.pathname.startsWith("/admin/user") && !$page.url.pathname.startsWith("/admin/docs")}
+{#if !$page.url.pathname.startsWith("/admin/user/") && !$page.url.pathname.startsWith("/admin/docs") && $page.url.pathname !== "/admin/user"}
     <div class="flex min-h-screen">
         <Sidebar items={adminNav} />
         <div

@@ -72,7 +72,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Post("/datasources/:id/analyze", h.AnalyzeDataSource)
 
 	// Skills
-	adminAdmin.Get("/skills", h.ListSkills)
+	admin.Get("/skills", h.ListSkills)
 	adminAdmin.Post("/skills", h.CreateSkill)
 	adminAdmin.Put("/skills/:id", h.UpdateSkill)
 	adminAdmin.Delete("/skills/:id", h.DeleteSkill)
@@ -115,18 +115,18 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Delete("/im/pairings/:id", h.UnbindIM)
 
 	// 日志
-	adminAdmin.Get("/logs/audit", h.ListAuditLogs)
-	adminAdmin.Get("/logs/request", h.ListRequestLogs)
+	admin.Get("/logs/audit", h.ListAuditLogs)
+	admin.Get("/logs/request", h.ListRequestLogs)
 	admin.Get("/logs/export", h.ExportLogs)
 
 	// === API 密钥管理 ===
-	adminAdmin.Get("/api-keys", h.ListApiKeys)
+	admin.Get("/api-keys", h.ListApiKeys)
 	adminAdmin.Post("/api-keys", h.CreateApiKey)
 	adminAdmin.Delete("/api-keys/:id", h.DeleteApiKey)
 	adminAdmin.Post("/api-keys/:id/regenerate", h.RegenerateApiKey)
 
 	// 系统设置
-	adminAdmin.Get("/system/config", h.GetSystemConfig)
+	admin.Get("/system/config", h.GetSystemConfig)
 	adminAdmin.Put("/system/config", h.UpdateSystemConfig)
 	adminAdmin.Post("/system/smtp/test", h.TestSMTP)
 
