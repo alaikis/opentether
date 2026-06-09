@@ -10,13 +10,11 @@ import (
 // Auth creates JWT authentication middleware
 func Auth(secret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Get token from Authorization header
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
 			return c.Status(401).JSON(fiber.Map{"error": "missing authorization header"})
 		}
 
-		// Extract token from "Bearer <token>"
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
 			return c.Status(401).JSON(fiber.Map{"error": "invalid authorization header format"})
@@ -24,7 +22,6 @@ func Auth(secret string) fiber.Handler {
 
 		tokenString := parts[1]
 
-		// Parse and validate token
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fiber.NewError(401, "invalid signing method")
@@ -36,24 +33,22 @@ func Auth(secret string) fiber.Handler {
 			return c.Status(401).JSON(fiber.Map{"error": "invalid or expired token"})
 		}
 
-		// Extract claims and set in context
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
 			return c.Status(401).JSON(fiber.Map{"error": "invalid token claims"})
 		}
 
-		// Store user info in context
 		c.Locals("user_id", claims["user_id"])
 		c.Locals("global_user_id", claims["global_user_id"])
 		c.Locals("name", claims["name"])
 		c.Locals("permissions", claims["permissions"])
 
-		// role 兜底: 不存在或为空时默认为 "user"
 		role, _ := claims["role"].(string)
 		if role == "" {
 			role = "user"
 		}
 		c.Locals("role", role)
+		c.Locals("authenticated", true)
 
 		return c.Next()
 	}
@@ -95,8 +90,9 @@ func RequireAdmin() fiber.Handler {
 		role, ok := c.Locals("role").(string)
 		if !ok || role != "admin" {
 			return c.Status(403).JSON(fiber.Map{
-				"error":   "forbidden",
-				"message": "此操作需要管理员权限",
+				"error":     "forbidden",
+				"message":   "此操作需要管理员权限",
+				"your_role": role,
 			})
 		}
 		return c.Next()
