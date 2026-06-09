@@ -56,7 +56,7 @@ func (s *AuthService) Login(username, password string) (string, error) {
 
 	// 设置默认角色
 	if user.Role == "" {
-		if user.CreatedBy == "system" {
+		if user.CreatedBy == "system" || user.CreatedBy == "" {
 			user.Role = models.RoleAdmin
 		} else {
 			user.Role = models.RoleUser
@@ -101,7 +101,7 @@ func (s *AuthService) RefreshToken(tokenString string) (string, error) {
 
 	// 设置默认角色
 	if user.Role == "" {
-		if user.CreatedBy == "system" {
+		if user.CreatedBy == "system" || user.CreatedBy == "" {
 			user.Role = models.RoleAdmin
 		} else {
 			user.Role = models.RoleUser
