@@ -118,6 +118,14 @@ function createAuthStore() {
         }
       }
     },
+
+    /** 获取当前用户信息 */
+    getUser(): User | null {
+      if (browser) {
+        return JSON.parse(localStorage.getItem("user") || "null");
+      }
+      return null;
+    },
   };
 }
 
