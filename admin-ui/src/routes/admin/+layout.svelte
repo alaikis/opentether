@@ -18,24 +18,113 @@
         MessageSquare,
         ScrollText,
         Settings,
+        Brain,
+        Bot,
+        Shield,
+        Activity,
+        Stethoscope,
+        Server,
     } from "lucide-svelte";
 
     const adminNav = [
-        { href: "/admin", label: "仪表盘", icon: LayoutDashboard, exact: true },
+        {
+            href: "/admin",
+            label: "仪表盘",
+            icon: LayoutDashboard,
+            exact: true,
+            group: "概览",
+        },
         {
             href: "/admin/providers",
             label: "LLM 提供商",
             icon: Cpu,
-            required: true,
+            group: "概览",
         },
-        { href: "/admin/users", label: "用户管理", icon: Users },
-        { href: "/admin/groups", label: "用户组", icon: UserCog },
-        { href: "/admin/datasources", label: "数据源", icon: Database },
-        { href: "/admin/skills", label: "Skills", icon: Zap },
-        { href: "/admin/tasks", label: "定时任务", icon: Calendar },
-        { href: "/admin/im", label: "IM 配置", icon: MessageSquare },
-        { href: "/admin/logs", label: "系统日志", icon: ScrollText },
-        { href: "/admin/settings", label: "系统设置", icon: Settings },
+        {
+            href: "/admin/settings",
+            label: "系统设置",
+            icon: Settings,
+            group: "概览",
+        },
+        {
+            href: "/admin/logs",
+            label: "系统日志",
+            icon: ScrollText,
+            group: "概览",
+        },
+        {
+            href: "/admin/diagnostics",
+            label: "诊断中心",
+            icon: Stethoscope,
+            group: "概览",
+        },
+        {
+            href: "/admin/users",
+            label: "用户管理",
+            icon: Users,
+            group: "访问控制",
+        },
+        {
+            href: "/admin/groups",
+            label: "用户组",
+            icon: UserCog,
+            group: "访问控制",
+        },
+        {
+            href: "/admin/datasources",
+            label: "数据源",
+            icon: Database,
+            group: "数据与技能",
+        },
+        {
+            href: "/admin/skills",
+            label: "Skills",
+            icon: Zap,
+            group: "数据与技能",
+        },
+        {
+            href: "/admin/sql-audits",
+            label: "SQL 审计",
+            icon: Shield,
+            group: "数据与技能",
+        },
+        {
+            href: "/admin/fastpath",
+            label: "快路径",
+            icon: Activity,
+            group: "数据与技能",
+        },
+        {
+            href: "/admin/tasks",
+            label: "定时任务",
+            icon: Calendar,
+            group: "自动化",
+        },
+        {
+            href: "/admin/experiences",
+            label: "经验管理",
+            icon: Brain,
+            group: "自动化",
+        },
+        {
+            href: "/admin/im",
+            label: "IM 配置",
+            icon: MessageSquare,
+            group: "自动化",
+        },
+        {
+            href: "/admin/mcp",
+            label: "MCP 服务",
+            icon: Server,
+            group: "自动化",
+        },
+        {
+            href: "/admin/runtime-jobs",
+            label: "运行任务",
+            icon: Activity,
+            group: "自动化",
+        },
+        { href: "/admin/user", label: "AI 对话", icon: Bot },
     ];
 
     // 立即同步 auth 状态（在组件挂载前）
@@ -91,7 +180,7 @@
         )?.label || "管理后台";
 </script>
 
-{#if !$page.url.pathname.startsWith("/admin/user/") && !$page.url.pathname.startsWith("/admin/docs") && $page.url.pathname !== "/admin/user"}
+{#if !$page.url.pathname.startsWith("/admin/docs")}
     <div class="flex min-h-screen">
         <Sidebar items={adminNav} />
         <div

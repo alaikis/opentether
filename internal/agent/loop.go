@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/alaikis/opentether/internal/llm"
 	"github.com/alaikis/opentether/internal/models"
+	"github.com/alaikis/opentether/internal/templating"
 )
 
 // ============================================
@@ -20,8 +22,7 @@ import (
 // ============================================
 
 const (
-	MaxLoopIterations = 10
-	LoopTimeout       = 5 * time.Minute
+	LoopTimeout = time.Hour
 )
 
 // LoopContext 循环执行上下文
@@ -29,6 +30,7 @@ type LoopContext struct {
 	UserID         string
 	ConversationID string
 	OriginalQuery  string
+	Memory         *ConversationMemoryContext
 	History        []LoopStep
 	Observations   []string
 	Iteration      int
@@ -46,12 +48,63 @@ type LoopStep struct {
 	Error      string                 `json:"error,omitempty"`
 }
 
-// ExecuteLoop 执行 ReAct 循环
+// LoopEvent 循环执行过程中的实时事件（用于流式输出）
+type LoopEvent struct {
+	Type    string                 `json:"type"`    // "thinking", "tool_start", "tool_result", "final_token", "error"
+	Content string                 `json:"content"` // 事件内容
+	Data    map[string]interface{} `json:"data,omitempty"`
+}
+
+// sendEvent 非阻塞发送事件到 channel
+func sendEvent(events chan<- LoopEvent, evt LoopEvent) {
+	if events == nil {
+		return
+	}
+	select {
+	case events <- evt:
+	default:
+	}
+}
+
+// ExecuteLoop 执行 ReAct 循环（向后兼容，内部调用 ExecuteLoopWithEvents）
 func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query string, conversationID string) (*ChatResponse, error) {
+	return e.ExecuteLoopWithEvents(ctx, user, query, conversationID, nil)
+}
+
+// ExecuteLoopWithEvents 执行 ReAct 循环并通过 events channel 发送实时进度事件
+// events 若为 nil 则行为与 ExecuteLoop 一致
+func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserContext, query string, conversationID string, events chan<- LoopEvent) (*ChatResponse, error) {
+	// 函数退出时关闭事件 channel
+	if events != nil {
+		defer close(events)
+	}
+
+	var conversationMemory *ConversationMemoryContext
+	if e.memory != nil {
+		var memErr error
+		conversationMemory, memErr = e.memory.LoadConversationMemory(user.UserID, conversationID, query, conversationWindowMessages)
+		if memErr != nil {
+			log.Printf("[Memory] 加载对话记忆失败: %v", memErr)
+		}
+	}
+
+	if conversationMemory != nil && conversationMemory.Route.Action != "" && conversationMemory.Route.Action != "continue" {
+		sendEvent(events, LoopEvent{
+			Type:    "topic_route",
+			Content: conversationMemory.Route.Reason,
+			Data: map[string]interface{}{
+				"action":       conversationMemory.Route.Action,
+				"from_task_id": conversationMemory.Route.FromTaskID,
+				"to_task_id":   conversationMemory.Route.ToTaskID,
+			},
+		})
+	}
+
 	loop := &LoopContext{
 		UserID:         user.UserID,
 		ConversationID: conversationID,
 		OriginalQuery:  query,
+		Memory:         conversationMemory,
 		History:        make([]LoopStep, 0),
 		Observations:   make([]string, 0),
 		StartTime:      time.Now(),
@@ -84,8 +137,8 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 		toolNames[t.Name] = true
 	}
 
-	// 构建系统 prompt（含可用工具描述 + 边界约束）
-	systemPrompt := e.buildSystemPrompt(availableTools, user)
+	// 构建系统 prompt（含可用工具描述 + 边界约束 + 长期记忆 + 当前问题召回）
+	systemPrompt := e.buildSystemPrompt(availableTools, user, query)
 
 	// 创建 LLM client
 	llmClient, err := llm.NewClient(provider)
@@ -95,14 +148,25 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 
 	totalTokens := 0
 
-	for loop.Iteration = 0; loop.Iteration < MaxLoopIterations; loop.Iteration++ {
+	maxIterations := e.config.Executor.EmbeddedConfig.MaxLoopIterations
+	if maxIterations <= 0 {
+		maxIterations = 1<<31 - 1 // 0 表示不限制，设为极大值
+	}
+	runtimeJob := e.startRuntimeJob(user, conversationID, query, maxIterations)
+
+	for loop.Iteration = 0; loop.Iteration < maxIterations; loop.Iteration++ {
+		e.heartbeatRuntimeJob(runtimeJob, loop.Iteration)
 		// 超时检查
 		if time.Since(loop.StartTime) > LoopTimeout {
-			loop.History = append(loop.History, LoopStep{
+			timeoutStep := LoopStep{
 				StepID: loop.Iteration,
 				Action: "error",
 				Error:  "执行超时",
-			})
+			}
+			loop.History = append(loop.History, timeoutStep)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "timeout", timeoutStep)
+			e.finishRuntimeJob(runtimeJob, "failed", "", "执行超时")
+			sendEvent(events, LoopEvent{Type: "error", Content: "执行超时"})
 			break
 		}
 
@@ -113,7 +177,7 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 		resp, err := llmClient.ChatCompletion(ctx, llm.ChatRequest{
 			Model:       provider.Model,
 			Messages:    messages,
-			MaxTokens:   2048,
+			MaxTokens:   512,
 			Temperature: 0.3,
 		})
 		if err != nil {
@@ -123,6 +187,9 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 				Error:  err.Error(),
 			}
 			loop.History = append(loop.History, step)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "llm_error", step)
+			e.finishRuntimeJob(runtimeJob, "failed", "", err.Error())
+			sendEvent(events, LoopEvent{Type: "error", Content: fmt.Sprintf("LLM 调用失败: %v", err)})
 			break
 		}
 
@@ -132,12 +199,18 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 		decision, parseErr := parseLoopDecision(resp.Content)
 		if parseErr != nil {
 			log.Printf("[Loop] 解析决策失败: %v, raw=%.200s", parseErr, resp.Content)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "parse_error", map[string]interface{}{"error": parseErr.Error(), "raw": resp.Content})
+			e.finishRuntimeJob(runtimeJob, "failed", resp.Content, parseErr.Error())
+			sendEvent(events, LoopEvent{Type: "error", Content: fmt.Sprintf("解析决策失败: %v", parseErr)})
 			return &ChatResponse{
 				Message:        resp.Content,
 				ConversationID: conversationID,
 				TokensUsed:     totalTokens,
 			}, nil
 		}
+
+		// 发送 thinking 事件
+		sendEvent(events, LoopEvent{Type: "thinking", Content: decision.Thought})
 
 		step := LoopStep{
 			StepID:  loop.Iteration,
@@ -148,6 +221,11 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 		switch decision.Action {
 		case "final_answer":
 			loop.History = append(loop.History, step)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "final_answer", map[string]interface{}{"step": step, "answer": decision.FinalAnswer})
+			e.finishRuntimeJob(runtimeJob, "succeeded", decision.FinalAnswer, "")
+
+			// 发送 final_token 事件
+			sendEvent(events, LoopEvent{Type: "final_token", Content: decision.FinalAnswer})
 
 			// === 经验积累：多步操作自动保存为待审核经验 ===
 			if e.experience != nil {
@@ -169,6 +247,15 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 			step.ToolName = decision.ToolName
 			step.ToolInput = decision.ToolInput
 
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "tool_call", step)
+
+			// 发送 tool_start 事件
+			sendEvent(events, LoopEvent{
+				Type:    "tool_start",
+				Content: decision.ToolName,
+				Data:    map[string]interface{}{"tool_name": decision.ToolName, "tool_input": decision.ToolInput},
+			})
+
 			// === 边界检查：工具是否在用户权限范围内 ===
 			if !toolNames[decision.ToolName] {
 				log.Printf("[Loop] 拒绝未授权工具: %s (user=%s)", decision.ToolName, user.UserID)
@@ -177,6 +264,7 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 				observation := fmt.Sprintf("[边界检查] 拒绝工具 %s: 不在用户权限范围内", decision.ToolName)
 				loop.Observations = append(loop.Observations, observation)
 				loop.History = append(loop.History, step)
+				e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "tool_rejected", step)
 				continue
 			}
 
@@ -188,9 +276,13 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 				step.ToolOutput = toolOutput
 			}
 
+			// 发送 tool_result 事件
+			sendEvent(events, LoopEvent{Type: "tool_result", Content: step.ToolOutput})
+
 			observation := fmt.Sprintf("[工具 %s 执行结果]: %s", decision.ToolName, step.ToolOutput)
 			loop.Observations = append(loop.Observations, observation)
 			loop.History = append(loop.History, step)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "tool_result", step)
 
 		case "parallel_calls":
 			// === 并行执行：多个互不依赖的工具调用同时执行 ===
@@ -202,14 +294,34 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 			}
 
 			log.Printf("[Loop] 并行执行 %d 个工具调用", len(decision.ParallelCalls))
+
+			// 发送 tool_start 事件（每个并行调用一个）
+			for _, call := range decision.ParallelCalls {
+				sendEvent(events, LoopEvent{
+					Type:    "tool_start",
+					Content: call.ToolName,
+					Data:    map[string]interface{}{"tool_name": call.ToolName, "tool_input": call.ToolInput},
+				})
+			}
+
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "parallel_calls", decision.ParallelCalls)
 			parallelSteps := e.executeParallelCalls(ctx, user, decision.ParallelCalls, toolNames)
+
+			// 发送 tool_result 事件（每个结果一个）
+			for _, ps := range parallelSteps {
+				sendEvent(events, LoopEvent{Type: "tool_result", Content: ps.ToolOutput})
+			}
+
 			observation := formatParallelResults(parallelSteps)
 			loop.Observations = append(loop.Observations, observation)
 			loop.History = append(loop.History, parallelSteps...)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "parallel_results", parallelSteps)
 
 		case "clarify":
 			// === 参数补全：向用户提问，等待下一轮对话补充参数 ===
 			loop.History = append(loop.History, step)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "clarify", map[string]interface{}{"step": step, "question": decision.ClarifyQuestion})
+			e.finishRuntimeJob(runtimeJob, "paused", decision.ClarifyQuestion, "等待用户补充参数")
 			question := decision.ClarifyQuestion
 			if question == "" {
 				question = "请提供更多信息以完成任务"
@@ -229,12 +341,15 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 		case "confirm":
 			// === 写入确认：生成确认文档，等待用户批准后再执行 ===
 			loop.History = append(loop.History, step)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "confirm", map[string]interface{}{"step": step, "confirm_doc": decision.ConfirmDoc})
 			doc := decision.ConfirmDoc
 			if doc == nil {
 				step.Error = "confirm 需要提供 confirm_doc"
 				loop.History = append(loop.History, step)
+				e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "confirm_error", step)
 				continue
 			}
+			e.finishRuntimeJob(runtimeJob, "paused", "", "等待用户确认写操作")
 			return &ChatResponse{
 				Message:        formatConfirmMessage(doc),
 				ConversationID: conversationID,
@@ -250,6 +365,8 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 
 		default:
 			loop.History = append(loop.History, step)
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "fallback", map[string]interface{}{"step": step, "raw": resp.Content})
+			e.finishRuntimeJob(runtimeJob, "succeeded", resp.Content, "")
 			return &ChatResponse{
 				Message:        resp.Content,
 				ConversationID: conversationID,
@@ -261,6 +378,9 @@ func (e *AgentEngine) ExecuteLoop(ctx context.Context, user *UserContext, query 
 
 	// 达到最大迭代次数，生成总结
 	summary := fmt.Sprintf("已完成 %d 步分析。查询: %s。如需更详细的信息，请提供更具体的问题。", loop.Iteration, query)
+	e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "max_iterations", map[string]interface{}{"summary": summary})
+	e.finishRuntimeJob(runtimeJob, "succeeded", summary, "")
+
 	return &ChatResponse{
 		Message:        summary,
 		ConversationID: conversationID,
@@ -300,62 +420,263 @@ type ConfirmOp struct {
 	Details string `json:"details"` // 操作详情
 }
 
-// parseLoopDecision 从 LLM 输出解析决策 JSON
+// parseLoopDecision 从 LLM 输出解析决策 JSON。
+// 容错策略：JSON code block → JSON 对象 → 修复截断 JSON → 纯文本 final_answer 兜底。
 func parseLoopDecision(content string) (*LoopDecision, error) {
-	// 尝试从 markdown code block 中提取 JSON
-	content = strings.TrimSpace(content)
-
-	// 查找 ```json ... ``` 块
-	if idx := strings.Index(content, "```json"); idx >= 0 {
-		start := idx + 7
-		if end := strings.Index(content[start:], "```"); end >= 0 {
-			content = strings.TrimSpace(content[start : start+end])
-		}
-	} else if idx := strings.Index(content, "{"); idx >= 0 {
-		// 查找第一个完整的 JSON 对象
-		content = content[idx:]
-		if end := strings.LastIndex(content, "}"); end >= 0 {
-			content = content[:end+1]
-		}
+	original := strings.TrimSpace(content)
+	if decision, ok := parseFunctionStyleDecision(original); ok {
+		return decision, nil
+	}
+	candidate := extractDecisionJSONCandidate(original)
+	if candidate == "" {
+		return fallbackDecisionFromText(original), nil
 	}
 
 	var decision LoopDecision
-	if err := json.Unmarshal([]byte(content), &decision); err != nil {
-		return nil, fmt.Errorf("parse decision: %w, content: %.200s", err, content)
+	if err := json.Unmarshal([]byte(candidate), &decision); err != nil {
+		repaired := repairTruncatedDecisionJSON(candidate)
+		if repaired != candidate {
+			if repairErr := json.Unmarshal([]byte(repaired), &decision); repairErr == nil {
+				candidate = repaired
+			} else {
+				return fallbackDecisionFromText(original), nil
+			}
+		} else {
+			return fallbackDecisionFromText(original), nil
+		}
 	}
 
 	if decision.Action == "" {
-		return nil, fmt.Errorf("decision action is empty")
+		if decision.FinalAnswer != "" {
+			decision.Action = "final_answer"
+		} else {
+			return fallbackDecisionFromText(original), nil
+		}
+	}
+
+	// LLM 有时会直接用工具名作为 action（如 action:"employee_query" 而非 action:"tool_call"）
+	// 此时自动修正为 tool_call
+	if decision.Action != "tool_call" && decision.Action != "final_answer" &&
+		decision.Action != "parallel_calls" && decision.Action != "clarify" &&
+		decision.Action != "confirm" {
+		if decision.ToolName == "" {
+			decision.ToolName = decision.Action
+		}
+		decision.Action = "tool_call"
 	}
 
 	return &decision, nil
 }
 
-// getAvailableTools 从已注册的 Skill 中派生可用工具列表
-// 所有工具均来自 skills 表（内置 + 用户自定义），智能体不能自创工具
-func (e *AgentEngine) getAvailableTools(user *UserContext) []ToolDef {
-	// 从数据库加载所有启用的 Skills
-	var skills []models.Skill
-	e.db.Where("enabled = ?", true).Find(&skills)
+func parseFunctionStyleDecision(content string) (*LoopDecision, bool) {
+	if !strings.Contains(content, "<function=") {
+		return nil, false
+	}
+	fnRe := regexp.MustCompile(`<function=([^>]+)>`)
+	fnMatch := fnRe.FindStringSubmatch(content)
+	if len(fnMatch) < 2 || strings.TrimSpace(fnMatch[1]) == "" {
+		return nil, false
+	}
+	paramRe := regexp.MustCompile(`<parameter=([^>]+)>([^<]*)`)
+	params := map[string]interface{}{}
+	for _, m := range paramRe.FindAllStringSubmatch(content, -1) {
+		if len(m) >= 3 {
+			params[strings.TrimSpace(m[1])] = strings.TrimSpace(m[2])
+		}
+	}
+	return &LoopDecision{
+		Action:    "tool_call",
+		Thought:   "模型返回 function-call 标记，已自动转换为工具调用。",
+		ToolName:  strings.TrimSpace(fnMatch[1]),
+		ToolInput: params,
+	}, true
+}
 
-	tools := make([]ToolDef, 0, len(skills))
-	seen := make(map[string]bool)
+func extractDecisionJSONCandidate(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if idx := strings.Index(content, "```json"); idx >= 0 {
+		start := idx + len("```json")
+		if end := strings.Index(content[start:], "```"); end >= 0 {
+			return strings.TrimSpace(content[start : start+end])
+		}
+		return strings.TrimSpace(content[start:])
+	}
+	if idx := strings.Index(content, "```"); idx >= 0 {
+		start := idx + len("```")
+		if end := strings.Index(content[start:], "```"); end >= 0 {
+			block := strings.TrimSpace(content[start : start+end])
+			if strings.HasPrefix(block, "{") {
+				return block
+			}
+		}
+	}
+	idx := strings.Index(content, "{")
+	if idx < 0 {
+		return ""
+	}
+	candidate := strings.TrimSpace(content[idx:])
+	if end := strings.LastIndex(candidate, "}"); end >= 0 {
+		return strings.TrimSpace(candidate[:end+1])
+	}
+	return candidate
+}
 
-	for _, sk := range skills {
-		toolName := toolNameFromSkill(sk)
-		if toolName == "" || seen[toolName] {
+func repairTruncatedDecisionJSON(content string) string {
+	repaired := strings.TrimSpace(content)
+	if repaired == "" || !strings.HasPrefix(repaired, "{") {
+		return content
+	}
+	repaired = strings.TrimRight(repaired, ", \n\t")
+	if countUnescapedQuotes(repaired)%2 == 1 {
+		repaired += "\""
+	}
+	openBraces := strings.Count(repaired, "{") - strings.Count(repaired, "}")
+	openBrackets := strings.Count(repaired, "[") - strings.Count(repaired, "]")
+	for openBrackets > 0 {
+		repaired += "]"
+		openBrackets--
+	}
+	for openBraces > 0 {
+		repaired += "}"
+		openBraces--
+	}
+	return repaired
+}
+
+func countUnescapedQuotes(s string) int {
+	count := 0
+	escaped := false
+	for _, r := range s {
+		if escaped {
+			escaped = false
 			continue
 		}
-		seen[toolName] = true
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			count++
+		}
+	}
+	return count
+}
 
+func fallbackDecisionFromText(text string) *LoopDecision {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		text = "抱歉，本次模型响应为空或被截断，请重新尝试。"
+	}
+	return &LoopDecision{
+		Action:      "final_answer",
+		Thought:     "模型未返回严格 JSON，已使用纯文本兜底回答。",
+		FinalAnswer: text,
+	}
+}
+
+// getAvailableTools 从已注册的 Skill 中派生可用工具列表
+// 所有工具均来自 skills 表（内置 + 用户自定义），智能体不能自创工具
+// 如果用户选中了特定 Skill，只返回该 Skill 对应的工具（精确边界）
+func (e *AgentEngine) getAvailableTools(user *UserContext) []ToolDef {
+	// 如果用户选中了特定 Skill，只授那个 Skill 对应的工具
+	if selectedSkillID, ok := user.Context["selected_skill_id"].(string); ok && selectedSkillID != "" {
+		tools := e.getToolsForSkill(selectedSkillID)
+		return append(tools, e.getMCPToolDefs()...)
+	}
+
+	// 否则返回所有启用的 Skill 实例工具。不要按底层 tool 去重，否则多个 text2sql Skill 会被折叠成一个。
+	var skills []models.Skill
+	e.db.Where("enabled = ?", true).
+		Order("CASE WHEN category = '系统内置' THEN 1 ELSE 0 END, created_at DESC").
+		Find(&skills)
+
+	tools := make([]ToolDef, 0, len(skills))
+	for _, sk := range skills {
+		baseTool := toolNameFromSkill(sk)
+		if baseTool == "" {
+			continue
+		}
 		tools = append(tools, ToolDef{
-			Name:        toolName,
-			Description: sk.Description,
+			Name:        formatSkillToolName(sk.ID),
+			Description: fmt.Sprintf("Skill[%s/%s] %s", sk.Name, sk.SkillType, sk.Description),
 			Parameters:  toolParamsFromSkill(sk),
 		})
 	}
 
+	tools = append(tools, e.getMCPToolDefs()...)
 	return tools
+}
+
+func (e *AgentEngine) getMCPToolDefs() []ToolDef {
+	if e == nil || e.mcpProvider == nil {
+		return nil
+	}
+	runtimeTools := e.mcpProvider.ListAvailableTools()
+	defs := make([]ToolDef, 0, len(runtimeTools))
+	for _, tool := range runtimeTools {
+		params := map[string]interface{}{"arguments": "MCP 工具参数对象"}
+		if len(tool.InputSchema) > 0 {
+			var schema map[string]interface{}
+			if json.Unmarshal(tool.InputSchema, &schema) == nil {
+				params = schema
+			}
+		}
+		defs = append(defs, ToolDef{
+			Name:        formatMCPToolName(tool.ServerID, tool.Name),
+			Description: fmt.Sprintf("MCP[%s] %s", tool.ServerName, tool.Description),
+			Parameters:  params,
+		})
+	}
+	return defs
+}
+
+func formatMCPToolName(serverID, toolName string) string {
+	return "mcp__" + serverID + "__" + strings.ReplaceAll(toolName, "__", "_")
+}
+
+func parseMCPToolName(name string) (string, string, bool) {
+	if !strings.HasPrefix(name, "mcp__") {
+		return "", "", false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(name, "mcp__"), "__", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func formatSkillToolName(skillID string) string {
+	return "skill__" + strings.ReplaceAll(skillID, "-", "_")
+}
+
+func parseSkillToolName(name string) (string, bool) {
+	if !strings.HasPrefix(name, "skill__") {
+		return "", false
+	}
+	id := strings.ReplaceAll(strings.TrimPrefix(name, "skill__"), "_", "-")
+	return id, id != ""
+}
+
+// getToolsForSkill 返回指定 Skill 对应的工具（精确边界）
+func (e *AgentEngine) getToolsForSkill(skillID string) []ToolDef {
+	var skill models.Skill
+	if err := e.db.Where("id = ? AND enabled = ?", skillID, true).First(&skill).Error; err != nil {
+		return nil
+	}
+
+	toolName := toolNameFromSkill(skill)
+	if toolName == "" {
+		return nil
+	}
+
+	return []ToolDef{{
+		Name:        formatSkillToolName(skill.ID),
+		Description: fmt.Sprintf("Skill[%s/%s] %s", skill.Name, skill.SkillType, skill.Description),
+		Parameters:  toolParamsFromSkill(skill),
+	}}
 }
 
 // toolNameFromSkill 从 Skill 类型映射工具名
@@ -375,8 +696,6 @@ func toolNameFromSkill(sk models.Skill) string {
 		return "chat"
 	case "text2sql":
 		return "text2sql"
-	case "employee_query":
-		return "employee_query"
 	case "env_setup":
 		return "setup_env"
 	case "script_exec":
@@ -398,8 +717,6 @@ func toolParamsFromSkill(sk models.Skill) map[string]interface{} {
 		return map[string]interface{}{"query": "用户的问题"}
 	case "text2sql":
 		return map[string]interface{}{"question": "用中文描述要查询什么数据"}
-	case "employee_query":
-		return map[string]interface{}{"query_type": "list | search | detail", "keyword": "搜索关键词"}
 	case "env_setup":
 		return map[string]interface{}{"script_name": "脚本名称", "script_content": "脚本内容（用于检测依赖）", "extra_packages": "额外包（逗号分隔，可选）"}
 	case "script_exec":
@@ -420,8 +737,57 @@ type ToolDef struct {
 	Parameters  map[string]interface{} `json:"parameters"`
 }
 
+func (e *AgentEngine) executeSkillTool(ctx context.Context, user *UserContext, skillID string, input map[string]interface{}) (string, error) {
+	var skill models.Skill
+	if err := e.db.Where("id = ? AND enabled = ?", skillID, true).First(&skill).Error; err != nil {
+		return "", fmt.Errorf("Skill 不可用: %s", skillID)
+	}
+	if user.Context == nil {
+		user.Context = map[string]interface{}{}
+	}
+	user.Context["selected_skill_id"] = skill.ID
+	user.Context["selected_skill_name"] = skill.Name
+	user.Context["selected_skill_type"] = skill.SkillType
+	user.Context["selected_skill_config"] = skill.Config
+	if skill.Config != "" {
+		var cfg map[string]interface{}
+		if json.Unmarshal([]byte(skill.Config), &cfg) == nil {
+			if dsID, ok := cfg["data_source_id"].(string); ok && dsID != "" {
+				user.Context["data_source_id"] = dsID
+			}
+		}
+	}
+	baseTool := toolNameFromSkill(skill)
+	if baseTool == "" {
+		return "", fmt.Errorf("Skill 未配置底层工具: %s", skill.Name)
+	}
+	return e.executeTool(ctx, user, baseTool, input)
+}
+
 // executeTool 执行指定工具
 func (e *AgentEngine) executeTool(ctx context.Context, user *UserContext, toolName string, input map[string]interface{}) (string, error) {
+	if skillID, ok := parseSkillToolName(toolName); ok {
+		return e.executeSkillTool(ctx, user, skillID, input)
+	}
+	if serverID, mcpToolName, ok := parseMCPToolName(toolName); ok {
+		if e.mcpProvider == nil {
+			return "", fmt.Errorf("MCP 工具提供器未初始化")
+		}
+		if tpl, ok := input["__template"].(string); ok && tpl != "" {
+			if rendered := templating.SafeRender(tpl, map[string]interface{}{"input": input, "user": user}, ""); rendered != "" {
+				var renderedInput map[string]interface{}
+				if json.Unmarshal([]byte(rendered), &renderedInput) == nil {
+					input = renderedInput
+				}
+			}
+		}
+		result, err := e.mcpProvider.CallTool(serverID, mcpToolName, input)
+		if err != nil {
+			return "", err
+		}
+		return string(result), nil
+	}
+
 	switch toolName {
 	case "chat":
 		query, _ := input["query"].(string)
@@ -453,18 +819,33 @@ func (e *AgentEngine) executeTool(ctx context.Context, user *UserContext, toolNa
 		return formatText2SQLResult(result), nil
 
 	case "employee_query":
-		keyword, _ := input["keyword"].(string)
-		result, err := e.executeEmployee(keyword, user)
-		if err != nil {
-			return "", err
-		}
-		// 返回结构化结果
-		return formatEmployeeResultForLoop(result), nil
+		// employee_query 功能已合并到 text2sql Skill，返回提示引导用户
+		return "employee_query 功能已整合到数据查询 Skill，请直接描述您的问题，如「林烽上月出了多少单」", nil
 
 	case "generate_pdf", "generate_report":
-		// 占位：返回提示
 		title, _ := input["title"].(string)
-		return fmt.Sprintf("报表 [%s] 已生成，请在管理后台查看下载", title), nil
+		content, _ := input["content"].(string)
+		if content == "" {
+			// 尝试从 query/keyword 取内容
+			content, _ = input["query"].(string)
+		}
+		if title == "" {
+			title = "数据报表"
+		}
+		if content == "" {
+			content = "无数据内容"
+		}
+		content = templating.SafeRender(reportPDFContentJinja, map[string]interface{}{"title": title, "content": content}, content)
+
+		// 生成 PDF — 带标题和文本内容
+		ctx := context.Background()
+		columns := []string{"内容"}
+		rows := [][]interface{}{{content}}
+		url, err := e.generateReportPDF(ctx, title, columns, rows)
+		if err != nil {
+			return "", fmt.Errorf("PDF 生成失败: %w", err)
+		}
+		return fmt.Sprintf("PDF 报表已生成: %s", url), nil
 
 	case "setup_env":
 		// 设置 Python 执行环境（uv + 依赖）
@@ -529,7 +910,7 @@ func (e *AgentEngine) executeTool(ctx context.Context, user *UserContext, toolNa
 		return fmt.Sprintf("[脚本执行成功] 输出:\n%s", output), nil
 
 	default:
-		return "", fmt.Errorf("未知工具: %s", toolName)
+		return fmt.Sprintf("[工具不可用] %s 功能暂未开放，请尝试其他方式描述您的问题", toolName), nil
 	}
 }
 
@@ -542,56 +923,17 @@ func availableToolNames(tools []ToolDef) []string {
 	return names
 }
 
-// buildSystemPrompt 构建系统提示词（注入可用工具描述 + 边界约束）
-func (e *AgentEngine) buildSystemPrompt(tools []ToolDef, user *UserContext) string {
-	var sb strings.Builder
-	sb.WriteString("你是 OpenTether AI 助手，一个企业级 AI Agent。你必须在给定的权限和工具范围内工作。\n\n")
+// buildSystemPrompt 构建系统提示词（注入可用工具描述 + 边界约束 + Soul + 记忆）
+func (e *AgentEngine) buildSystemPrompt(tools []ToolDef, user *UserContext, query string) string {
+	basePrompt := renderReactSystemPrompt(tools, user, e.config.Executor.EmbeddedConfig.MaxLoopIterations)
 
-	// 边界约束
-	sb.WriteString("## ⚠️ 边界约束（不可违反）\n")
-	sb.WriteString("- 只能使用下面列出的工具，不得自行创造或假设其他能力\n")
-	sb.WriteString("- 不得修改用户权限、数据范围或系统配置\n")
-	sb.WriteString("- 不得代替管理员做出权限决策\n")
-	sb.WriteString(fmt.Sprintf("- 当前用户: %s (%s), 部门: %s\n", user.Name, user.Department, user.Department))
-	sb.WriteString(fmt.Sprintf("- 用户状态: %s | 可用工具数: %d\n\n", user.Status, len(tools)))
-
-	sb.WriteString("## 可用工具（仅限以下）\n")
-	for _, tool := range tools {
-		paramsJSON, _ := json.Marshal(tool.Parameters)
-		sb.WriteString(fmt.Sprintf("- **%s**: %s (参数: %s)\n", tool.Name, tool.Description, string(paramsJSON)))
+	// 注入 Soul + 长期记忆（Letta 风格）
+	if e.memory != nil && e.memory.longTerm != nil {
+		groupIDs := user.getGroupIDs()
+		return e.memory.longTerm.BuildSoulPrompt(user.UserID, groupIDs, query, basePrompt)
 	}
 
-	sb.WriteString("\n## 响应格式\n")
-	sb.WriteString("你必须严格按以下 JSON 格式响应（不要包含其他文字）：\n\n")
-	sb.WriteString("如果需要使用单个工具：\n")
-	sb.WriteString("```json\n")
-	sb.WriteString(`{"action":"tool_call","thought":"你的推理过程","tool_name":"工具名","tool_input":{"参数":"值"}}` + "\n")
-	sb.WriteString("```\n\n")
-	sb.WriteString("如果有多个互不依赖的工具调用（如报表的多维度查询），可以并行执行：\n")
-	sb.WriteString("```json\n")
-	sb.WriteString(`{"action":"parallel_calls","thought":"这些查询互不依赖","calls":[{"tool_name":"text2sql","tool_input":{"question":"各地区销售额"}},{"tool_name":"text2sql","tool_input":{"question":"产品排名"}}]}` + "\n")
-	sb.WriteString("```\n\n")
-	sb.WriteString("如果信息不足以完成任务（如用户没说表名、时间范围等），向用户提问：\n")
-	sb.WriteString("```json\n")
-	sb.WriteString(`{"action":"clarify","thought":"推理过程","clarify_question":"请问您需要查询哪个部门的数据？"}` + "\n")
-	sb.WriteString("```\n\n")
-	sb.WriteString("如果需要进行插入/更新/删除等写操作，必须先让用户确认：\n")
-	sb.WriteString("```json\n")
-	sb.WriteString(`{"action":"confirm","thought":"推理过程","confirm_doc":{"title":"操作标题","description":"操作说明","operations":[{"type":"insert","target":"表名","details":"操作详情"}],"risk":"low"}}` + "\n")
-	sb.WriteString("```\n\n")
-	sb.WriteString("如果已经有足够信息回答用户：\n")
-	sb.WriteString("```json\n")
-	sb.WriteString(`{"action":"final_answer","thought":"你的推理过程","final_answer":"最终答案"}` + "\n")
-	sb.WriteString("```\n\n")
-	sb.WriteString("## 规则\n")
-	sb.WriteString("- 每次只调用一个工具\n")
-	sb.WriteString("- 先思考再行动，如果工具不可用则直接告知用户\n")
-	sb.WriteString("- 参数不完整时必须用 clarify 向用户提问，不得自行猜测\n")
-	sb.WriteString("- 写操作（插入、更新、删除）必须先用 confirm 让用户确认\n")
-	sb.WriteString(fmt.Sprintf("- 最多 %d 步，超出则总结已有信息\n", MaxLoopIterations))
-	sb.WriteString("- 用中文回答，保持专业、简洁\n")
-
-	return sb.String()
+	return basePrompt
 }
 
 // buildLoopMessages 构建本轮 LLM 消息
@@ -600,32 +942,35 @@ func (e *AgentEngine) buildLoopMessages(systemPrompt, query string, loop *LoopCo
 		{Role: "system", Content: systemPrompt},
 	}
 
-	// 第一次迭代：添加用户原始问题
+	conversationContext := BuildConversationMemoryPrompt(loop.Memory, query)
+
+	// 第一次迭代：添加用户原始问题 + 当前对话短期记忆/任务工作记忆
 	if loop.Iteration == 0 {
-		messages = append(messages, llm.Message{
-			Role:    "user",
-			Content: fmt.Sprintf("用户问题: %s\n\n请分析需求并决定下一步行动。", query),
-		})
+		content := templating.SafeRender(loopFirstMessageJinja, map[string]interface{}{
+			"conversation_context": conversationContext,
+			"query":                query,
+			"has_pronoun":          hasPronounReference(query),
+		}, fmt.Sprintf("用户当前问题: %s\n\n请分析需求并决定下一步行动。", query))
+		messages = append(messages, llm.Message{Role: "user", Content: content})
 		return messages
 	}
 
-	// 后续迭代：添加观察结果
-	historyText := fmt.Sprintf("用户问题: %s\n\n## 已执行的步骤:\n", query)
+	var steps []map[string]interface{}
 	for _, step := range loop.History {
 		if step.Action == "tool_call" {
 			output := step.ToolOutput
 			if len(output) > 500 {
 				output = output[:500] + "...(已截断)"
 			}
-			historyText += fmt.Sprintf("- 第%d步: 调用了 %s, 结果: %s\n", step.StepID+1, step.ToolName, output)
+			steps = append(steps, map[string]interface{}{"no": step.StepID + 1, "tool_name": step.ToolName, "output": output})
 		}
 	}
-	historyText += "\n根据以上结果，请决定下一步: 继续调用工具还是给出最终答案？"
-
-	messages = append(messages, llm.Message{
-		Role:    "user",
-		Content: historyText,
-	})
+	content := templating.SafeRender(loopNextMessageJinja, map[string]interface{}{
+		"conversation_context": conversationContext,
+		"query":                query,
+		"steps":                steps,
+	}, fmt.Sprintf("用户当前问题: %s\n\n根据历史步骤，请决定下一步。", query))
+	messages = append(messages, llm.Message{Role: "user", Content: content})
 
 	return messages
 }

@@ -10,33 +10,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alaikis/opentether/internal/agent"
 	"github.com/alaikis/opentether/internal/models"
 	"gorm.io/gorm"
 )
 
 // MCPService MCP 协议集成服务
 type MCPService struct {
-	db        *gorm.DB
-	servers   map[string]*MCPServer
-	mu        sync.RWMutex
+	db      *gorm.DB
+	servers map[string]*MCPServer
+	mu      sync.RWMutex
 }
 
 type MCPServer struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Command     string            `json:"command"`      // 执行命令，如 "npx", "python"
-	Args        []string          `json:"args"`         // 参数，如 ["-y", "@modelcontextprotocol/server-filesystem", "./data"]
-	Env         map[string]string `json:"env"`          // 环境变量
-	Status      string            `json:"status"`       // running, stopped, error
-	Process     *exec.Cmd         `json:"-"`
-	Stdin       *os.File          `json:"-"`
-	Stdout      *os.File          `json:"-"`
-	Stderr      *os.File          `json:"-"`
-	Tools       []MCPTool         `json:"tools"`        // 可用工具
-	Resources   []MCPResource     `json:"resources"`    // 可用资源
-	Prompts     []MCPPrompt       `json:"prompts"`      // 可用提示词
-	LastError   string            `json:"last_error"`
-	StartedAt   time.Time         `json:"started_at"`
+	ID        string                       `json:"id"`
+	Name      string                       `json:"name"`
+	Command   string                       `json:"command"` // 执行命令，如 "npx", "python"
+	Args      []string                     `json:"args"`    // 参数，如 ["-y", "@modelcontextprotocol/server-filesystem", "./data"]
+	Env       map[string]string            `json:"env"`     // 环境变量
+	Status    string                       `json:"status"`  // running, stopped, error
+	Process   *exec.Cmd                    `json:"-"`
+	Stdin     *os.File                     `json:"-"`
+	Stdout    *os.File                     `json:"-"`
+	Stderr    *os.File                     `json:"-"`
+	writeMu   sync.Mutex                   `json:"-"`
+	pendingMu sync.Mutex                   `json:"-"`
+	pending   map[string]chan *MCPResponse `json:"-"`
+	Tools     []MCPTool                    `json:"tools"`     // 可用工具
+	Resources []MCPResource                `json:"resources"` // 可用资源
+	Prompts   []MCPPrompt                  `json:"prompts"`   // 可用提示词
+	LastError string                       `json:"last_error"`
+	StartedAt time.Time                    `json:"started_at"`
 }
 
 type MCPTool struct {
@@ -85,18 +89,34 @@ func NewMCPService(db *gorm.DB) *MCPService {
 	}
 }
 
-// MCPConfig MCP 服务器配置模型
-type MCPConfig struct {
-	ID          string            `json:"id" gorm:"type:varchar(36);primaryKey"`
-	Name        string            `json:"name" gorm:"type:varchar(100)"`
-	Command     string            `json:"command" gorm:"type:varchar(500)"`
-	Args        string            `json:"args" gorm:"type:text"` // JSON array
-	Env         string            `json:"env" gorm:"type:text"`   // JSON object
-	Enabled     bool              `json:"enabled" gorm:"default:true"`
-	Status      string            `json:"status" gorm:"type:varchar(20)"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+// StartEnabledServers starts all enabled MCP configs. It is safe to call at boot.
+func (s *MCPService) StartEnabledServers() {
+	configs, err := s.GetConfigs()
+	if err != nil {
+		return
+	}
+	for _, cfg := range configs {
+		if cfg.Enabled {
+			_ = s.StartServer(cfg.ID)
+		}
+	}
 }
+
+// StopAll stops all running MCP servers.
+func (s *MCPService) StopAll() {
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.servers))
+	for id := range s.servers {
+		ids = append(ids, id)
+	}
+	s.mu.RUnlock()
+	for _, id := range ids {
+		_ = s.StopServer(id)
+	}
+}
+
+// MCPConfig MCP 服务器配置模型（由 models.MCPConfig 持久化，此处保留类型别名兼容 handler/service API）
+type MCPConfig = models.MCPConfig
 
 // SaveToDB 保存配置到数据库
 func (s *MCPService) SaveToDB(config *MCPConfig) error {
@@ -106,7 +126,7 @@ func (s *MCPService) SaveToDB(config *MCPConfig) error {
 // GetConfigs 获取所有 MCP 配置
 func (s *MCPService) GetConfigs() ([]MCPConfig, error) {
 	var configs []MCPConfig
-	err := s.db.Where("enabled = ?", true).Find(&configs).Error
+	err := s.db.Where("enabled = ?", true).Order("created_at DESC").Find(&configs).Error
 	return configs, err
 }
 
@@ -166,8 +186,10 @@ func (s *MCPService) StartServer(configID string) error {
 		Stdin:     stdin,
 		Stdout:    stdout,
 		Stderr:    stderr,
+		pending:   make(map[string]chan *MCPResponse),
 		StartedAt: time.Now(),
 	}
+	go s.readLoop(server)
 
 	s.mu.Lock()
 	s.servers[configID] = server
@@ -232,12 +254,14 @@ func (s *MCPService) initializeServer(server *MCPServer) {
 		var result map[string]interface{}
 		if json.Unmarshal(resp.Result, &result) == nil {
 			if capabilities, ok := result["capabilities"].(map[string]interface{}); ok {
-				// 解析 tools
-				if tools, ok := capabilities["tools"].(map[string]interface{}); ok {
-					if list, ok := tools["list"].(bool); ok && list {
-						// 发送 tools/list 请求
-						s.listTools(server)
-					}
+				if _, ok := capabilities["tools"]; ok {
+					s.listTools(server)
+				}
+				if _, ok := capabilities["resources"]; ok {
+					s.listResources(server)
+				}
+				if _, ok := capabilities["prompts"]; ok {
+					s.listPrompts(server)
 				}
 			}
 		}
@@ -248,48 +272,86 @@ func (s *MCPService) initializeServer(server *MCPServer) {
 		JSONRPC: "2.0",
 		Method:  "initialized",
 	}
-	server.Stdin.Write([]byte(notif.String() + "\n"))
+	server.writeMu.Lock()
+	_, _ = server.Stdin.Write([]byte(notif.String() + "\n"))
+	server.writeMu.Unlock()
 }
 
-// sendRequest 发送请求并等待响应
-func (s *MCPService) sendRequest(server *MCPServer, req MCPRequest, timeout time.Duration) (*MCPResponse, error) {
-	reqBytes, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-
-	// 写入请求
-	_, err = server.Stdin.Write(append(reqBytes, '\n'))
-	if err != nil {
-		return nil, err
-	}
-
-	// 读取响应
-	respCh := make(chan *MCPResponse, 1)
-	errCh := make(chan error, 1)
-
-	go func() {
-		reader := bufio.NewReader(server.Stdout)
+func (s *MCPService) readLoop(server *MCPServer) {
+	reader := bufio.NewReader(server.Stdout)
+	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			errCh <- err
+			server.LastError = err.Error()
+			server.Status = "error"
+			server.pendingMu.Lock()
+			for id, ch := range server.pending {
+				close(ch)
+				delete(server.pending, id)
+			}
+			server.pendingMu.Unlock()
 			return
 		}
 
 		var resp MCPResponse
 		if err := json.Unmarshal([]byte(line), &resp); err != nil {
-			errCh <- err
-			return
+			continue
 		}
-		respCh <- &resp
-	}()
+		id := fmt.Sprint(resp.ID)
+		if id == "" || id == "<nil>" {
+			continue
+		}
+		server.pendingMu.Lock()
+		ch := server.pending[id]
+		delete(server.pending, id)
+		server.pendingMu.Unlock()
+		if ch != nil {
+			ch <- &resp
+			close(ch)
+		}
+	}
+}
+
+// sendRequest 发送请求并等待响应。响应由单 reader loop 分发，支持并发调用。
+func (s *MCPService) sendRequest(server *MCPServer, req MCPRequest, timeout time.Duration) (*MCPResponse, error) {
+	if req.ID == nil {
+		req.ID = time.Now().UnixNano()
+	}
+	id := fmt.Sprint(req.ID)
+	respCh := make(chan *MCPResponse, 1)
+
+	server.pendingMu.Lock()
+	server.pending[id] = respCh
+	server.pendingMu.Unlock()
+
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		server.pendingMu.Lock()
+		delete(server.pending, id)
+		server.pendingMu.Unlock()
+		return nil, err
+	}
+
+	server.writeMu.Lock()
+	_, err = server.Stdin.Write(append(reqBytes, '\n'))
+	server.writeMu.Unlock()
+	if err != nil {
+		server.pendingMu.Lock()
+		delete(server.pending, id)
+		server.pendingMu.Unlock()
+		return nil, err
+	}
 
 	select {
-	case resp := <-respCh:
+	case resp, ok := <-respCh:
+		if !ok || resp == nil {
+			return nil, fmt.Errorf("MCP 连接已关闭")
+		}
 		return resp, nil
-	case err := <-errCh:
-		return nil, err
 	case <-time.After(timeout):
+		server.pendingMu.Lock()
+		delete(server.pending, id)
+		server.pendingMu.Unlock()
 		return nil, fmt.Errorf("请求超时")
 	}
 }
@@ -328,6 +390,77 @@ func (s *MCPService) listTools(server *MCPServer) {
 			}
 		}
 	}
+}
+
+func (s *MCPService) listResources(server *MCPServer) {
+	req := MCPRequest{JSONRPC: "2.0", Method: "resources/list", Params: json.RawMessage("{}"), ID: 3}
+	resp, err := s.sendRequest(server, req, 5*time.Second)
+	if err != nil || resp.Result == nil {
+		return
+	}
+	var result map[string]interface{}
+	if json.Unmarshal(resp.Result, &result) != nil {
+		return
+	}
+	items, _ := result["resources"].([]interface{})
+	server.Resources = make([]MCPResource, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]interface{}); ok {
+			server.Resources = append(server.Resources, MCPResource{
+				URI:         fmt.Sprintf("%v", m["uri"]),
+				Name:        fmt.Sprintf("%v", m["name"]),
+				Description: fmt.Sprintf("%v", m["description"]),
+				MimeType:    fmt.Sprintf("%v", m["mimeType"]),
+			})
+		}
+	}
+}
+
+func (s *MCPService) listPrompts(server *MCPServer) {
+	req := MCPRequest{JSONRPC: "2.0", Method: "prompts/list", Params: json.RawMessage("{}"), ID: 4}
+	resp, err := s.sendRequest(server, req, 5*time.Second)
+	if err != nil || resp.Result == nil {
+		return
+	}
+	var result map[string]interface{}
+	if json.Unmarshal(resp.Result, &result) != nil {
+		return
+	}
+	items, _ := result["prompts"].([]interface{})
+	server.Prompts = make([]MCPPrompt, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]interface{}); ok {
+			prompt := MCPPrompt{Name: fmt.Sprintf("%v", m["name"]), Description: fmt.Sprintf("%v", m["description"])}
+			if args, ok := m["arguments"].([]interface{}); ok {
+				for _, arg := range args {
+					prompt.Arguments = append(prompt.Arguments, fmt.Sprintf("%v", arg))
+				}
+			}
+			server.Prompts = append(server.Prompts, prompt)
+		}
+	}
+}
+
+// ListAvailableTools 返回所有运行中的 MCP 工具，供 Agent Loop 注入工具列表。
+func (s *MCPService) ListAvailableTools() []agent.MCPRuntimeTool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []agent.MCPRuntimeTool
+	for _, server := range s.servers {
+		if server.Status != "running" {
+			continue
+		}
+		for _, tool := range server.Tools {
+			result = append(result, agent.MCPRuntimeTool{
+				ServerID:    server.ID,
+				ServerName:  server.Name,
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: tool.InputSchema,
+			})
+		}
+	}
+	return result
 }
 
 // CallTool 调用 MCP 工具

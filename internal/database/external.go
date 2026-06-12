@@ -20,6 +20,11 @@ type ExternalDBConfig struct {
 
 // Connect 连接到外部数据库
 func Connect(cfg ExternalDBConfig) (*sql.DB, error) {
+	return ConnectWithPoolOptions(cfg, DefaultExternalDBPoolOptions())
+}
+
+// ConnectWithPoolOptions 连接到外部数据库并设置连接池限制。
+func ConnectWithPoolOptions(cfg ExternalDBConfig, opts ExternalDBPoolOptions) (*sql.DB, error) {
 	var dsn string
 
 	switch cfg.Type {
@@ -38,9 +43,16 @@ func Connect(cfg ExternalDBConfig) (*sql.DB, error) {
 		return nil, fmt.Errorf("连接数据库失败: %v", err)
 	}
 
+	opts = normalizeExternalDBPoolOptions(opts)
+	db.SetMaxOpenConns(opts.MaxOpenConns)
+	db.SetMaxIdleConns(opts.MaxIdleConns)
+	db.SetConnMaxLifetime(opts.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(opts.ConnMaxIdleTime)
+
 	// 测试连接
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("数据库连接测试失败: %v", err)
+		_ = db.Close()
+		return nil, fmt.Errorf("数据库连接测试失败 (type=%s)", cfg.Type)
 	}
 
 	return db, nil
@@ -88,18 +100,18 @@ func getDBVersion(db *sql.DB, dbType string) string {
 
 // TableInfo 表结构信息
 type TableInfo struct {
-	Name    string      `json:"name"`
+	Name    string       `json:"name"`
 	Columns []ColumnInfo `json:"columns"`
 }
 
 // ColumnInfo 列信息
 type ColumnInfo struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Nullable   bool   `json:"nullable"`
-	KeyType    string `json:"key_type"` // PRI, MUL, 空
-	Extra      string `json:"extra"`
-	Comment    string `json:"comment"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Nullable bool   `json:"nullable"`
+	KeyType  string `json:"key_type"` // PRI, MUL, 空
+	Extra    string `json:"extra"`
+	Comment  string `json:"comment"`
 }
 
 // GetSchema 获取数据库表结构

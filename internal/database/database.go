@@ -7,6 +7,7 @@ import (
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/models"
 	"github.com/glebarez/sqlite"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -58,10 +59,16 @@ func Migrate(db *gorm.DB) error {
 		&models.Provider{},
 		&models.DataSource{},
 		&models.Skill{},
+		&models.RouteExample{},
+		&models.SkillRuntimeMemory{},
+		&models.MCPConfig{},
 		&models.ImConfig{},
 		&models.ImBinding{},
 		&models.Conversation{},
 		&models.Message{},
+		&models.ConversationState{},
+		&models.RuntimeJob{},
+		&models.RuntimeCheckpoint{},
 		&models.AuditLog{},
 		&models.ScheduledTask{},
 		&models.TaskExecution{},
@@ -73,6 +80,9 @@ func Migrate(db *gorm.DB) error {
 		&models.UserMemory{},
 		&models.GroupMemory{},
 		&models.AgentScript{},
+		&models.SQLAudit{},
+		&models.UserProfile{},
+		&models.CompanyProfile{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
@@ -80,6 +90,9 @@ func Migrate(db *gorm.DB) error {
 
 	// 注册内置系统 Skills
 	seedSystemSkills(db)
+
+	// 确保至少有一个管理员用户
+	seedAdminUser(db)
 
 	log.Println("Database migrations completed successfully")
 	return nil
@@ -105,16 +118,10 @@ func seedSystemSkills(db *gorm.DB) {
 			Name:        "数据查询",
 			SkillType:   "text2sql",
 			Description: "将自然语言转为 SQL 查询数据库。支持多步查询、数据分析、报表生成",
-			Keywords:    "查询,SQL,数据,统计,报表,分析,排名,趋势,销售额,业绩,库存",
+			Keywords:    "查询,SQL,数据,统计,订单,报表,分析,排名,趋势,销售额,业绩,库存,销量",
 			Config:      `{"builtin":true,"tool":"text2sql"}`,
 		},
-		{
-			Name:        "员工查询",
-			SkillType:   "employee_query",
-			Description: "查询员工信息、部门结构、职位分布等",
-			Keywords:    "员工,部门,职位,人事,考勤,绩效,入职,工龄",
-			Config:      `{"builtin":true,"tool":"employee_query"}`,
-		},
+
 		{
 			Name:        "环境管理",
 			SkillType:   "env_setup",
@@ -128,6 +135,34 @@ func seedSystemSkills(db *gorm.DB) {
 			Description: "执行 bash 或 Python 脚本。bash 优先，Python 在 uv 环境中运行。支持数据查询、文件处理、报表生成等任务",
 			Keywords:    "脚本,执行,运行,bash,shell,python,自动化,任务",
 			Config:      `{"builtin":true,"tool":"execute_script"}`,
+		},
+		{
+			Name:        "PDF 报表",
+			SkillType:   "pdf",
+			Description: "生成图文并茂的 PDF 报表。支持表格数据、分析文字、图表、封面页脚",
+			Keywords:    "PDF,报表,导出,下载,打印,报告,图表,图文",
+			Config:      `{"builtin":true,"tool":"generate_pdf"}`,
+		},
+		{
+			Name:        "Excel 处理",
+			SkillType:   "excel",
+			Description: "读取 Excel 文件数据，或生成 Excel 报表。支持多 Sheet、公式、图表、数据透视",
+			Keywords:    "Excel,xlsx,表格,电子表格,导出Excel,读取Excel,数据透视",
+			Config:      `{"builtin":true,"tool":"generate_report"}`,
+		},
+		{
+			Name:        "Word 文档",
+			SkillType:   "word",
+			Description: "生成 Word 文档 (docx)。支持标题、段落、表格、图片、目录、页眉页脚",
+			Keywords:    "Word,docx,文档,报告,合同,标书,公文,排版",
+			Config:      `{"builtin":true,"tool":"generate_report"}`,
+		},
+		{
+			Name:        "PPT 设计",
+			SkillType:   "ppt",
+			Description: "设计演示文稿 (PPT/PPTX)。支持主题、布局、图表、动画、演讲备注",
+			Keywords:    "PPT,演示,幻灯片,汇报,演讲,展示,ppt,pptx",
+			Config:      `{"builtin":true,"tool":"generate_report"}`,
 		},
 	}
 
@@ -152,5 +187,40 @@ func seedSystemSkills(db *gorm.DB) {
 		} else {
 			log.Printf("[Seed] 注册系统 Skill: %s", sk.Name)
 		}
+	}
+}
+
+// seedAdminUser 确保至少有一个管理员用户（用户表为空时创建默认 admin）
+func seedAdminUser(db *gorm.DB) {
+	var count int64
+	db.Model(&models.User{}).Count(&count)
+	if count > 0 {
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("[Seed] 密码加密失败: %v", err)
+		return
+	}
+
+	adminUser := &models.User{
+		GlobalUserID: "admin",
+		Name:         "管理员",
+		Email:        "admin@example.com",
+		Role:         models.RoleAdmin,
+		Status:       "active",
+		PasswordHash: string(hashedPassword),
+		CreatedBy:    "system",
+	}
+	if err := db.Create(adminUser).Error; err != nil {
+		log.Printf("[Seed] 创建默认管理员失败: %v", err)
+	} else {
+		log.Printf("[Seed] ========================================")
+		log.Printf("[Seed]   默认管理员已创建")
+		log.Printf("[Seed]   用户名: admin")
+		log.Printf("[Seed]   密码:   admin123")
+		log.Printf("[Seed]   ⚠️  请登录后立即修改密码！")
+		log.Printf("[Seed] ========================================")
 	}
 }

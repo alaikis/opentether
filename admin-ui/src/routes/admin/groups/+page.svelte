@@ -8,6 +8,7 @@
         id: string;
         group_name: string;
         group_code: string;
+        external_group_id: string;
         description: string;
         data_access_scope: string;
         created_at: string;
@@ -24,6 +25,7 @@
 
     let formGroupName = "";
     let formGroupCode = "";
+    let formExternalGroupID = "";
     let formDescription = "";
     let formDataAccessScope = "self";
 
@@ -66,6 +68,7 @@
         editingGroup = null;
         formGroupName = "";
         formGroupCode = "";
+        formExternalGroupID = "";
         formDescription = "";
         formDataAccessScope = "self";
         showModal = true;
@@ -75,6 +78,7 @@
         editingGroup = g;
         formGroupName = g.group_name;
         formGroupCode = g.group_code;
+        formExternalGroupID = g.external_group_id || "";
         formDescription = g.description || "";
         formDataAccessScope = g.data_access_scope || "self";
         showModal = true;
@@ -95,6 +99,7 @@
             const body = {
                 group_name: formGroupName,
                 group_code: formGroupCode,
+                external_group_id: formExternalGroupID,
                 description: formDescription,
                 data_access_scope: formDataAccessScope,
             };
@@ -198,6 +203,10 @@
                         >
                         <th
                             class="text-left py-3 px-4 font-medium text-slate-500"
+                            >外部组识别号</th
+                        >
+                        <th
+                            class="text-left py-3 px-4 font-medium text-slate-500"
                             >数据权限</th
                         >
                         <th
@@ -226,6 +235,10 @@
                                     {g.group_code}
                                 </span>
                             </td>
+                            <td
+                                class="py-3 px-4 font-mono text-xs text-slate-500"
+                                >{g.external_group_id || "-"}</td
+                            >
                             <td class="py-3 px-4">
                                 <span
                                     class="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full text-xs"
@@ -308,6 +321,23 @@
                         disabled={!!editingGroup}
                         class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 disabled:bg-slate-50"
                     />
+                </div>
+
+                <div>
+                    <label
+                        class="block text-sm font-medium text-slate-700 mb-1"
+                    >
+                        公司外部组识别号
+                    </label>
+                    <input
+                        type="text"
+                        bind:value={formExternalGroupID}
+                        placeholder="如 HR/ERP 系统组织编码"
+                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-200"
+                    />
+                    <p class="text-xs text-slate-400 mt-1">
+                        用于多系统集成和外部组织映射
+                    </p>
                 </div>
 
                 <div>

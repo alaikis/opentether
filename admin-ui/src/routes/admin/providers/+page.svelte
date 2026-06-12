@@ -55,6 +55,7 @@
     ];
     let formEnableStreaming = true;
     let formTimeout = 120;
+    let formRole = "main";
 
     const providerTypes = [
         { value: "openai", label: "OpenAI / 兼容 API" },
@@ -103,6 +104,7 @@
         ];
         formEnableStreaming = true;
         formTimeout = 120;
+        formRole = "main";
         testResult = "";
         showModal = true;
     }
@@ -131,6 +133,7 @@
             ];
             formEnableStreaming = cfg.enable_streaming !== false;
             formTimeout = cfg.timeout || 120;
+            formRole = cfg.role || "main";
         } catch {
             formModels = [
                 {
@@ -145,6 +148,7 @@
             ];
             formEnableStreaming = true;
             formTimeout = 120;
+            formRole = "main";
         }
         testResult = "";
         showModal = true;
@@ -190,6 +194,7 @@
             models,
             enable_streaming: formEnableStreaming,
             timeout: formTimeout,
+            role: formRole,
         });
 
         saving = true;
@@ -315,16 +320,15 @@
                 {#each providers as p}
                     <div
                         class="p-5 rounded-xl border {p.enabled
-                            ? 'border-slate-200'
-                            : 'border-slate-100 opacity-60'} hover:shadow-md transition-shadow cursor-pointer"
-                        on:click={() => openEditModal(p)}
+                            ? 'border-slate-200 bg-white'
+                            : 'border-slate-200 bg-slate-50/80'} hover:shadow-md transition-shadow"
                     >
                         <div class="flex items-center justify-between mb-3">
                             <div class="flex items-center gap-3">
                                 <div
                                     class="w-10 h-10 rounded-lg {p.enabled
                                         ? 'bg-emerald-50'
-                                        : 'bg-slate-100'} flex items-center justify-center text-xl"
+                                        : 'bg-slate-200'} flex items-center justify-center text-xl"
                                 >
                                     {p.provider_type === "openai"
                                         ? "🤖"
@@ -344,6 +348,22 @@
                                 </div>
                             </div>
                             <div class="flex items-center gap-2">
+                                <!-- 启用/停用开关 -->
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors {p.enabled
+                                        ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                        : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}"
+                                    on:click|stopPropagation={() =>
+                                        handleToggle(p)}
+                                    title={p.enabled ? "点击停用" : "点击启用"}
+                                >
+                                    <span
+                                        class="w-2 h-2 rounded-full {p.enabled
+                                            ? 'bg-emerald-500'
+                                            : 'bg-slate-400'}"
+                                    ></span>
+                                    {p.enabled ? "已启用" : "已停用"}
+                                </button>
                                 <button
                                     class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
                                     on:click|stopPropagation={() =>
@@ -357,7 +377,7 @@
                                 <span
                                     class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs {p.enabled
                                         ? 'bg-slate-100 text-slate-600'
-                                        : 'bg-slate-50 text-slate-400'}"
+                                        : 'bg-slate-200 text-slate-400'}"
                                 >
                                     {#if m.is_vision}🖼️
                                     {/if}
@@ -367,21 +387,13 @@
                                 </span>
                             {/each}
                         </div>
-                        <div
-                            class="flex items-center gap-4 mt-3 pt-3 border-t border-slate-100"
-                        >
+                        <div class="mt-3 pt-3 border-t border-slate-100">
                             <button
-                                class="text-xs {p.enabled
-                                    ? 'text-emerald-600'
-                                    : 'text-slate-400'} hover:underline"
-                                on:click|stopPropagation={() => handleToggle(p)}
+                                class="text-xs text-primary-600 hover:text-primary-700 hover:underline"
+                                on:click|stopPropagation={() =>
+                                    openEditModal(p)}
                             >
-                                <span
-                                    class="w-1.5 h-1.5 rounded-full inline-block mr-1 {p.enabled
-                                        ? 'bg-emerald-500'
-                                        : 'bg-slate-300'}"
-                                ></span>
-                                {p.enabled ? "已启用" : "已停用"}
+                                编辑配置
                             </button>
                         </div>
                     </div>
@@ -400,9 +412,30 @@
         <div
             class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 m-4"
         >
-            <h3 class="text-lg font-bold text-slate-800 mb-4">
-                {editingProvider ? "编辑提供商" : "添加提供商"}
-            </h3>
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-bold text-slate-800">
+                    {editingProvider ? "编辑提供商" : "添加提供商"}
+                </h3>
+                <button
+                    class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                    on:click={() => (showModal = false)}
+                    aria-label="关闭"
+                >
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        class="w-5 h-5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    >
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
 
             <!-- 基本信息 -->
             <div class="grid grid-cols-2 gap-4 mb-6">
@@ -429,6 +462,34 @@
                             <option value={t.value}>{t.label}</option>
                         {/each}
                     </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1"
+                        >模型角色</label
+                    >
+                    <select
+                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                        bind:value={formRole}
+                    >
+                        <option value="main">主模型 main</option>
+                        <option value="fast_router"
+                            >快路径小模型 fast_router</option
+                        >
+                        <option value="summarizer">摘要模型 summarizer</option>
+                    </select>
+                    <p class="text-xs text-slate-400 mt-1">
+                        fast_router 用于简单路由，可配置 CPU 小模型。
+                    </p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1"
+                        >优先级</label
+                    >
+                    <input
+                        type="number"
+                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                        bind:value={formPriority}
+                    />
                 </div>
                 <div class="col-span-2">
                     <label class="block text-sm font-medium text-slate-700 mb-1"

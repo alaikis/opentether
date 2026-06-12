@@ -164,6 +164,31 @@ func (m *ExperienceManager) TrySaveExperience(userID, query string, steps []Loop
 	return nil
 }
 
+// 内置工具名列表（硬编码在 executeTool 中，不依赖 skill 数据库记录）
+var builtinToolNames = map[string]bool{
+	"chat":            true,
+	"text2sql":        true,
+	"generate_pdf":    true,
+	"generate_report": true,
+	"setup_env":       true,
+	"execute_script":  true,
+}
+
+// isToolAvailable 检查工具是否可用（内置工具或对应 skil 已启用）
+func isToolAvailable(db *gorm.DB, toolName string) bool {
+	if builtinToolNames[toolName] {
+		return true
+	}
+	// MCP 工具始终允许（在 executeTool 中会检查 MCP 提供器）
+	if strings.HasPrefix(toolName, "mcp__") {
+		return true
+	}
+	// 检查是否有对应的已启用 Skill
+	var count int64
+	db.Model(&models.Skill{}).Where("enabled = ? AND (config LIKE ? OR skill_type = ?)", true, `%"tool":"`+toolName+`"%`, toolName).Count(&count)
+	return count > 0
+}
+
 // ExecuteExperience 按经验步骤执行（跳过 LLM 推理）
 func (m *ExperienceManager) ExecuteExperience(ctx context.Context, engine *AgentEngine, user *UserContext, exp *AgentExperience) (*ChatResponse, error) {
 	var steps []LoopStep
@@ -177,6 +202,11 @@ func (m *ExperienceManager) ExecuteExperience(ctx context.Context, engine *Agent
 	var observations []string
 	for _, step := range steps {
 		if step.Action == "tool_call" || step.Action == "parallel_call" {
+			// 验证工具在当前环境中仍可用
+			if !isToolAvailable(engine.db, step.ToolName) {
+				observations = append(observations, fmt.Sprintf("[%s 不可用] 该工具对应的 Skill 已被删除或禁用，跳过此步骤", step.ToolName))
+				continue
+			}
 			result, err := engine.executeTool(ctx, user, step.ToolName, step.ToolInput)
 			if err != nil {
 				observations = append(observations, fmt.Sprintf("[%s 失败] %v", step.ToolName, err))
@@ -245,7 +275,13 @@ func (m *ExperienceManager) ReviewExperience(expID, reviewerID, status, note str
 	}
 
 	if status == ExpStatusActive {
-		// 激活时检查 scope 是否为 user:xxx，如果是则保持
+		// 激活时检查 scope 是否为 user:xxx，如果是则保持（PromoteToGlobal 负责升级为全局）
+		var exp AgentExperience
+		if err := m.db.Where("id = ?", expID).First(&exp).Error; err == nil {
+			if strings.HasPrefix(exp.Scope, ExpScopeUser) {
+				log.Printf("[ExperienceManager] 激活个人经验 %s (scope=%s)，保持用户级别", expID, exp.Scope)
+			}
+		}
 	}
 
 	return m.db.Model(&AgentExperience{}).Where("id = ?", expID).Updates(updates).Error
@@ -258,7 +294,7 @@ func (m *ExperienceManager) PromoteToGlobal(expID string) error {
 
 // DeleteExperience 删除经验
 func (m *ExperienceManager) DeleteExperience(expID string) error {
-	return m.db.Delete(&AgentExperience{}, expID).Error
+	return m.db.Where("id = ?", expID).Delete(&AgentExperience{}).Error
 }
 
 // extractTriggerPatterns 从查询和步骤中提取触发关键词

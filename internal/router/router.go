@@ -13,6 +13,7 @@ import (
 	"github.com/alaikis/opentether/internal/handler"
 	"github.com/alaikis/opentether/internal/middleware"
 	"github.com/alaikis/opentether/internal/service"
+	"github.com/alaikis/opentether/internal/storage"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
@@ -41,7 +42,7 @@ func findStaticRoot() string {
 
 // Setup 注册所有路由
 // uiFS: 前端静态文件系统，嵌入模式为 http.FileSystem，文件系统模式传 nil
-func Setup(app *fiber.App, h *handler.Handler, cfg *config.Config, uiFS http.FileSystem, db *gorm.DB, useEmbedded bool) {
+func Setup(app *fiber.App, h *handler.Handler, cfg *config.Config, uiFS http.FileSystem, db *gorm.DB, useEmbedded bool, store storage.Driver) {
 	// === 根路径重定向 ===
 	app.Get("/", func(c *fiber.Ctx) error {
 		currentDB := db
@@ -74,6 +75,13 @@ func Setup(app *fiber.App, h *handler.Handler, cfg *config.Config, uiFS http.Fil
 
 	// === 中间件 ===
 	app.Use(middleware.CORS(cfg.Security.CORS))
+
+	// === 下载端点（本地存储） ===
+	if cfg.Storage.Type == "local" {
+		rootPath, _ := filepath.Abs(cfg.Storage.Local.Path)
+		app.Static("/downloads", rootPath)
+		log.Printf("Download endpoint: /downloads -> %s", rootPath)
+	}
 
 	// === 前端路由 ===
 	if useEmbedded {

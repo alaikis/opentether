@@ -1,0 +1,2604 @@
+DATABASE boss (nw-mysql) tables=198
+
+TABLE migrations rows~12 comment=
+  - version bigint(20) key=PRI comment=
+  - migration_name varchar(100) key= comment=
+  - start_time timestamp key= comment=
+  - end_time timestamp key= comment=
+  - breakpoint tinyint(1) key= comment=
+
+TABLE t_accounting_account rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - description varchar(255) key= comment=description
+  - authorize_id varchar(255) key= comment=authorize_id
+  - sale_region_id varchar(255) key= comment=sale_region id *
+  - chief_staffs_id varchar(255) key= comment=chief staffs *
+  - create_time datetime key= comment=create_time
+
+TABLE t_address rows~496 comment=
+  - id int(11) unsigned key=PRI comment=
+  - kvk_number varchar(255) key= comment=kvk_number
+  - name varchar(255) key= comment=the address tag
+  - full_name text key= comment=the full name
+  - tel varchar(255) key= comment=the phone number
+  - country_code varchar(255) key= comment=the country code
+  - province varchar(255) key= comment=the province
+  - city varchar(255) key= comment=the city
+  - suburbs varchar(255) key= comment=the area
+  - address1 varchar(255) key= comment=the detailed address
+  - address2 varchar(255) key= comment=the detailed address
+  - address3 varchar(255) key= comment=the detailed address
+  - postcode varchar(255) key= comment=the postcode
+  - is_default tinyint(1) key= comment=primary
+  - state tinyint(1) key= comment=state
+  - user_id varchar(255) key= comment=user id *
+  - email varchar(255) key= comment=email
+  - company text key= comment=company
+  - staff_id varchar(255) key= comment=staff_id *
+  - tax_id varchar(255) key= comment=tax_id
+  - locale varchar(255) key= comment=
+  - remark text key= comment=
+
+TABLE t_adv rows~29 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - type int(11) key= comment=1,image;2,video;3,html
+  - url varchar(255) key= comment=
+  - content text key= comment=
+  - state tinyint(1) key= comment=state
+  - lan_code varchar(255) key= comment=the language
+  - regions varchar(255) key= comment=the regions show the adv space
+  - extend_filter_param varchar(255) key= comment=the filter param
+  - weight int(11) key= comment=
+  - start_time datetime key= comment=create time
+  - end_time datetime key= comment=end time
+  - create_time datetime key= comment=create time
+  - update_time datetime key= comment=update time
+  - adv_space_id int(10) key= comment=adv_space_id
+  - category varchar(255) key= comment=category
+  - poster varchar(355) key= comment=poster
+
+TABLE t_adv_result rows~64 comment=
+  - id int(11) unsigned key=PRI comment=
+  - adv_name text key= comment=adv name
+  - adv_state tinyint(1) key= comment=adv state
+  - staff_id varchar(255) key= comment=the staff id *
+  - adv_group text key= comment=adv group
+  - adv_budget decimal(10,2) key= comment=adv budget
+  - cost decimal(10,2) key= comment=adv cost *
+  - transform int(11) key= comment=transform
+  - show_time int(11) key= comment=show times
+  - show_persons int(11) key= comment=show persons
+  - start_time datetime key= comment=start time
+  - currency varchar(255) key= comment=currency
+  - end_time datetime key= comment=end time
+  - form_id text key= comment=the record from id
+
+TABLE t_adv_space rows~9 comment=name
+  - id tinyint(4) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - app_id varchar(255) key= comment=the app of the resource
+  - lan_code varchar(255) key= comment=the language
+  - regions varchar(255) key= comment=the regions show the adv space
+  - extend_filter_param varchar(255) key= comment=the filter param
+  - brief varchar(255) key= comment=brief%
+  - width varchar(255) key= comment=width
+  - height varchar(255) key= comment=height
+  - state tinyint(1) key= comment=state
+  - create_time datetime key= comment=create time
+  - update_time datetime key= comment=update time
+  - category varchar(255) key= comment=category
+
+TABLE t_after_sale_inbound rows~0 comment=CRM after sale inbound
+  - id int(11) unsigned key=PRI comment=
+  - after_sale_request_id int(11) key= comment=after sale request id *
+  - warehouse_id int(11) key= comment=warehouse id
+  - expected_quantity int(11) key= comment=expected quantity *
+  - received_quantity int(11) key= comment=received quantity *
+  - inbound_status varchar(32) key= comment=pending / received / inspected / disposed
+  - received_at datetime key= comment=received datetime
+  - received_remark varchar(512) key= comment=received remark
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_after_sale_quality_inspect rows~0 comment=CRM after sale quality inspect
+  - id int(11) unsigned key=PRI comment=
+  - inbound_id int(11) key= comment=after sale inbound id *
+  - inspector_id int(11) key= comment=inspector staff id *
+  - overall_status varchar(32) key= comment=qualified / defective / scrap
+  - appearance_check varchar(16) key= comment=pass / fail
+  - function_check varchar(16) key= comment=pass / fail / fail_na
+  - packaging_check varchar(16) key= comment=pass / fail
+  - quantity_check varchar(16) key= comment=pass / fail *
+  - defect_type varchar(64) key= comment=defect type
+  - defect_description text key= comment=defect description
+  - defect_photos text key= comment=defect photos json
+  - return_reason_category varchar(64) key= comment=return reason category
+  - return_reason_detail text key= comment=return reason detail
+  - is_resellable varchar(32) key= comment=yes / no / needs_rework
+  - liability_type varchar(32) key= comment=supplier / logistics / company / customer
+  - remark text key= comment=remark
+  - inspected_at datetime key= comment=inspected datetime
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_after_sale_request rows~0 comment=CRM after sale request
+  - id int(11) unsigned key=PRI comment=
+  - order_id int(11) key= comment=order id *
+  - order_item_id int(11) key= comment=order item id (partial return) *
+  - member_id int(11) key= comment=member id
+  - supplier_id int(11) key= comment=supplier id
+  - type varchar(32) key= comment=return / exchange / refund / complaint
+  - description text key= comment=description
+  - status varchar(32) key= comment=pending / pending_approval / approved / rejected / completed
+  - work_order_id int(11) key= comment=work order id *
+  - workflow_instance_id int(11) key= comment=tpflow instance id
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+  - refund_item_amount decimal(12,2) key= comment=refundable item amount *
+  - refund_shipping_amount decimal(12,2) key= comment=refundable shipping amount *
+  - refund_tax_amount decimal(12,2) key= comment=refundable tax amount *
+  - refund_other_amount decimal(12,2) key= comment=other refund amount *
+  - refund_total_amount decimal(12,2) key= comment=total refund amount *
+
+TABLE t_after_sale_request_item rows~0 comment=CRM after sale request item
+  - id int(11) unsigned key=PRI comment=
+  - after_sale_request_id int(11) key= comment=after sale request id *
+  - order_item_id int(11) key= comment=order item id *
+  - sku_id int(11) key= comment=sku id
+  - quantity int(11) key= comment=quantity *
+  - cancel_quantity int(11) key= comment=cancel quantity *
+  - reason varchar(256) key= comment=reason
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+  - source_order_id int(11) key= comment=source order id *
+  - refund_amount decimal(12,2) key= comment=item refund amount *
+
+TABLE t_amount rows~1011 comment=
+  - id int(11) unsigned key=PRI comment=
+  - currency varchar(255) key= comment=currency
+  - value decimal(10,2) key= comment=the money value
+  - rate decimal(10,3) key= comment=exchange rate
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_app rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - logo text key= comment=logo
+  - icon text key= comment=icon
+  - brief text key= comment=brief
+  - term text key= comment=term
+  - privacy text key= comment=privacy
+  - code varchar(255) key= comment=app code
+  - state tinyint(1) key= comment=the state of the developer
+  - created_at datetime key= comment=created time
+
+TABLE t_article rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - title varchar(255) key= comment=title
+  - article_type varchar(255) key= comment=such as topic,news,page
+  - poster text key= comment=the cover of the article
+  - video text key= comment=the cover video of the article
+  - content text key= comment=content
+  - meta_tags varchar(255) key= comment=the keywords of the article
+  - author_id varchar(255) key= comment=the author of the article
+  - created_at datetime key= comment=name
+  - updated_at datetime key= comment=name
+  - public tinyint(1) key= comment=article if public
+  - category varchar(255) key= comment=category
+  - lan_code varchar(255) key= comment=the language code
+  - regions varchar(255) key= comment=the id of the branch team
+  - vip_group varchar(255) key= comment=vip_group_ids
+  - site_id int(11) key= comment=the site id
+
+TABLE t_attribute rows~115 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - group_id int(11) key= comment=
+  - unit_quota tinyint(1) key= comment=
+  - unit_name varchar(255) key= comment=
+  - remark text key= comment=
+  - aspect tinyint(1) key= comment=
+  - required tinyint(1) key= comment=
+  - collection tinyint(1) key= comment=
+  - category_dependent tinyint(1) key= comment=
+
+TABLE t_attribute_group rows~12 comment=
+  - id int(10) key=PRI comment=
+  - name varchar(256) key= comment=
+  - remark text key= comment=
+  - item_type_id int(11) key= comment=
+  - state tinyint(1) key= comment=
+  - inv_background_color varchar(255) key= comment=inv background color
+  - inv_font_color varchar(255) key= comment=inv font color
+
+TABLE t_attribute_values rows~29 comment=
+  - id int(11) unsigned key=PRI comment=
+  - value text key= comment=value
+  - attribute_id int(11) unsigned key= comment=attribute id
+  - state tinyint(1) key= comment=state
+
+TABLE t_authority rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - description varchar(255) key= comment=
+  - endpoint text key= comment=endpoint
+  - app_id varchar(255) key= comment=app id
+  - channel_id varchar(255) key= comment=channel id
+  - create_time datetime key= comment=create_time
+  - state tinyint(1) key= comment=effect
+
+TABLE t_authority_scopes rows~99 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - scope text key= comment=
+  - env varchar(255) key= comment=
+  - open tinyint(1) key= comment=
+  - parent_id varchar(255) key= comment=
+  - description text key= comment=
+  - state tinyint(1) key= comment=
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_authority_scope_actions rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - action text key= comment=
+  - scope varchar(255) key= comment=
+  - description text key= comment=
+  - state tinyint(1) key= comment=
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_authority_scope_widgets rows~6 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - remark text key= comment=
+  - widget text key= comment=
+  - state tinyint(1) key= comment=
+
+TABLE t_authorize rows~19 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=shop name
+  - authorization varchar(255) key= comment=hottol authorization
+  - brief text key= comment=shop brief
+  - lan_code text key= comment=language code
+  - sale_regions text key= comment=sale regions *
+  - state tinyint(1) key= comment=state
+  - type varchar(255) key= comment=the authorize type
+  - station_id varchar(255) key= comment=the station
+  - shop_available_logistics text key= comment=shop available logistics
+  - meta json key= comment=the station
+  - channel varchar(255) key= comment=the service channel
+  - currency varchar(255) key= comment=than channel currency
+  - name_in_law text key= comment=name in law
+  - extra_data json key= comment=extra_data
+  - service_code varchar(255) key= comment=服务编码
+  - dynamic_service_code tinyint(1) key= comment=dynamic service code
+
+TABLE t_authorize_area rows~4 comment=authorize area
+  - id int(11) unsigned key=PRI comment=
+  - divider_type enum('countryCode','province','city','postCode') key= comment=divider type
+  - divider_value text key= comment=divider value
+  - authorize_id varchar(255) key= comment=authorize id
+  - spec_code varchar(255) key= comment=spec code
+  - priority int(11) key= comment=priority
+
+TABLE t_authorize_fees rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - fee_type varchar(20) key= comment=fee type
+  - name varchar(20) key= comment=name
+  - service_code varchar(255) key= comment=service code
+  - authorize_id varchar(255) key= comment=authorize
+  - region_ids varchar(255) key= comment=suitable regions
+  - brief text key= comment=brief
+  - fixed_fee_amount decimal(10,2) key= comment=amount *
+  - fee_expr text key= comment=amount *
+  - create_time datetime key= comment=create time
+  - state tinyint(1) key= comment=status
+
+TABLE t_barcode_convert_mapping rows~192 comment=条码转换映射表
+  - id int(11) unsigned key=PRI comment=
+  - barcode varchar(50) key= comment=条码
+  - convert_barcode varchar(50) key= comment=转换后的条码
+  - status int(1) key= comment=状态 1:启用 2:禁用
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+  - target_code_type varchar(50) key= comment=the target code type
+  - origin_code_type varchar(50) key= comment=the origin code type
+  - convert_type varchar(50) key= comment=the convert type
+  - origin_table varchar(500) key= comment=the origin table name
+  - origin_primary_key varchar(500) key= comment=the primary key
+
+TABLE t_billing rows~347 comment=
+  - id int(11) unsigned key=PRI comment=
+  - subject varchar(255) key= comment=subject
+  - area_id varchar(255) key= comment=area id
+  - bizNo varchar(255) key= comment=biz number
+  - income int(1) key= comment=
+  - transfer_id varchar(255) key= comment=transfer number
+  - accounting_account_id varchar(255) key= comment=accounting account id
+  - chief_staff_id varchar(255) key= comment=chief staff id *
+  - caption_id varchar(255) key= comment=caption id
+  - address_id varchar(255) key= comment=address id
+  - chief_accountant_id varchar(255) key= comment=chief accountant id
+  - proof text key= comment=proof
+  - progress int(11) key= comment=progress
+  - create_time datetime key= comment=create_time
+  - meta text key= comment=meta
+  - currency varchar(10) key= comment=
+  - figure text key= comment=meta
+  - actual_amount decimal(10,2) key= comment=actual amount *
+  - actual_currency text key= comment=actual currency
+  - actual_amount_id varchar(255) key= comment=actual amount id *
+  - noticed tinyint(1) key= comment=noticed
+  - type varchar(255) key= comment=billing type,such as order/return order *
+  - update_time datetime key= comment=
+  - reconciliation tinyint(1) key= comment=reconciliation state
+  - settlement_status varchar(255) key= comment=settlement status
+
+TABLE t_billing_lines rows~1942 comment=
+  - id int(11) unsigned key=PRI comment=
+  - billing_id varchar(255) key= comment=billing id
+  - line_id varchar(255) key= comment=line id
+  - remark text key= comment=remark
+  - quantity int(11) key= comment=quantity *
+  - amount decimal(10,2) key= comment= *
+  - actual_amount_id varchar(255) key= comment=actual amount id *
+  - created_by int(11) key= comment=created by
+  - create_time datetime key= comment=create_time
+  - effect tinyint(1) key= comment=effect
+  - type varchar(255) key= comment=fee type, only product is item
+  - ref text key= comment=
+  - meta text key= comment=meta
+
+TABLE t_block rows~9 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=block name
+  - position text key= comment=position
+  - sort int(11) key= comment=sort
+  - state tinyint(1) key= comment=state
+  - type varchar(255) key= comment=(identity type) role or profile
+  - type_id int(11) key= comment=type_id
+
+TABLE t_block_item rows~19 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=block name
+  - block_id int(11) key= comment=
+  - widget_id int(11) key= comment=
+  - span int(2) key= comment=span width,min=1 max=24
+  - sort int(11) key= comment=sort
+  - state tinyint(1) key= comment=state
+  - extra_data text key= comment=extra_data
+
+TABLE t_brand rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - shop_id varchar(255) key= comment=shop
+  - bind_supplier_ids varchar(255) key= comment=supplier
+  - code varchar(255) key= comment=code
+  - logo text key= comment=logo
+  - icon text key= comment=icon
+  - contact_address_id varchar(255) key= comment=contact address
+  - website_url text key= comment=web site
+  - desc text key= comment=desc
+  - sort int(11) key= comment=
+  - state tinyint(1) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - last_purchase_supplier_id varchar(255) key= comment=last purchase supplier id
+
+TABLE t_cargo rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=cargo name
+  - name_locale varchar(255) key= comment=cargo locale name
+  - variant_id varchar(255) key= comment=variant id
+  - hs_code varchar(255) key= comment=hs code
+  - route_type varchar(255) key= comment=route type
+  - station_id varchar(255) key= comment=station id
+  - target_router text key= comment=target router
+  - price decimal(10,2) key= comment=cargo price *
+  - currency varchar(255) key= comment=currency
+  - weight decimal(10,3) key= comment=weight
+  - weight_unit varchar(255) key= comment=weight unit
+  - length decimal(10,2) key= comment=length
+  - width decimal(10,2) key= comment=width
+  - height decimal(10,2) key= comment=height
+  - length_unit varchar(255) key= comment=length unit
+  - unit varchar(255) key= comment=unit
+  - certificate text key= comment=certificate
+  - documents text key= comment=documents
+  - create_time datetime key= comment=create_time
+  - update_time datetime key= comment=update_time
+  - origin text key= comment=
+
+TABLE t_certificate rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=certificate name
+  - catalog_id varchar(255) key= comment=catalog id
+  - description text key= comment=certificate description
+  - documents text key= comment=documents
+  - certificate_number text key= comment=certificate number
+  - bind_type varchar(255) key= comment=bind type
+  - bind_id varchar(255) key= comment=bind id
+  - status tinyint(1) key= comment=certificate status
+  - create_time datetime key= comment=create_time
+  - standard_certificate_code varchar(255) key= comment=certificate code
+
+TABLE t_code_regular rows~1 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - usage varchar(255) key= comment=usage
+  - regular varchar(255) key= comment=regular
+  - start_with varchar(255) key= comment=start with
+  - end_with varchar(255) key= comment=end with
+  - length int(11) key= comment=length
+  - contain text key= comment=contain
+
+TABLE t_communication_channel rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - user_id varchar(255) key= comment=staff id *
+  - comm_channel_id varchar(255) key= comment=hot channel id
+  - comm_user_id varchar(255) key= comment=hot account id *
+  - state tinyint(1) key= comment=The Status
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_competitive_site rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - brief text key= comment=brief
+  - gather_type_id int(11) key= comment=gather type id
+  - gate_url varchar(255) key= comment=gate url
+  - icon varchar(255) key= comment=spider
+  - domain varchar(255) key= comment=domain
+  - state tinyint(1) key= comment=state
+  - similar_site_id int(11) key= comment=from similar site creat
+  - hot_crawler_engine_id varchar(255) key= comment=hot crawler engine id
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_container rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - state tinyint(1) key= comment=state
+  - brief text key= comment=brief
+  - apply_to_warehouse varchar(255) key= comment=
+
+TABLE t_container_relationship_mapping rows~33 comment=
+  - id int(11) unsigned key=PRI comment=
+  - carrier_container_id varchar(255) key= comment=carrier pallet type id
+  - pallet_gauge varchar(255) key= comment=carrier pallet gauge
+  - length_unit varchar(10) key= comment=
+  - weight decimal(10,3) key= comment=weight
+  - weight_unit varchar(10) key= comment=
+  - state tinyint(1) key= comment=
+
+TABLE t_container_sku_include_standard rows~85 comment=
+  - id int(11) unsigned key=PRI comment=
+  - container_std_id varchar(255) key= comment=
+  - sku_id varchar(255) key= comment=
+  - amount int(11) key= comment= *
+  - state tinyint(1) key= comment=
+
+TABLE t_container_standard rows~176 comment=
+  - id int(11) unsigned key=PRI comment=
+  - container_id varchar(255) key= comment=container id
+  - length decimal(10,3) key= comment=
+  - width decimal(10,3) key= comment=
+  - height decimal(10,3) key= comment=
+  - weight decimal(10,3) key= comment=
+  - weight_unit varchar(10) key= comment=
+  - length_unit varchar(10) key= comment=
+  - adjust_height tinyint(1) key= comment=
+  - state tinyint(1) key= comment=
+  - origin varchar(255) key= comment=origin
+  - carrier_id varchar(255) key= comment=authorize id
+  - container_code varchar(255) key= comment=container code
+  - remark varchar(255) key= comment=remark
+  - max_load_weight decimal(10,2) key= comment=max load weight
+  - is_bulk tinyint(1) key= comment=是否散拖
+  - wms_id bigint(20) key= comment=适用仓库
+
+TABLE t_cue_words rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - figure varchar(255) key= comment=
+  - pk varchar(255) key= comment=
+  - word varchar(255) key= comment=
+  - primary tinyint(1) key= comment=
+  - state tinyint(1) key= comment=
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_data_export_conversion rows~55 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - origin_value text key= comment=jinja2 rule
+  - field_type varchar(255) key= comment=text,number,image
+  - func text key= comment=
+  - col_width int(11) key= comment=cell width
+  - rule_id int(11) unsigned key= comment=rule id
+  - sort int(11) key= comment=
+  - state tinyint(1) key= comment=state
+
+TABLE t_data_export_file_record rows~86 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - remark varchar(255) key= comment=remark
+  - generate_type varchar(255) key= comment=xls
+  - target_suffix varchar(255) key= comment=csv, xlsx
+  - fields text key= comment=fields
+  - task_params text key= comment=task params
+  - code varchar(255) key= comment=code
+  - document_url varchar(255) key= comment=document url
+  - document text key= comment=document
+  - hot_task_id varchar(255) key= comment=task id
+  - scene_id int(11) key= comment=
+  - rule_id int(11) key= comment=
+  - staff_id int(11) key= comment= *
+  - notify_operator tinyint(1) key= comment=weather notify
+  - create_time datetime key= comment=
+  - update_time datetime key= comment=
+
+TABLE t_data_export_rule rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - record_before text key= comment=record before
+  - list_node varchar(255) key= comment=list node
+  - record_after text key= comment=record after
+  - remark text key= comment=remark
+  - export_file_type varchar(255) key= comment=excel,csv
+  - row_height int(11) key= comment=cell height
+  - scene_id varchar(255) key= comment=scene
+  - type varchar(255) key= comment=
+  - state tinyint(1) key= comment=state
+
+TABLE t_data_import_conversion rows~18 comment=
+  - id int(11) unsigned key=PRI comment=
+  - import_header varchar(255) key= comment=import_header
+  - name varchar(255) key= comment=name
+  - description text key= comment=
+  - prop varchar(255) key= comment=prop
+  - require tinyint(1) key= comment=weather require
+  - type varchar(255) key= comment=text,bool,number,datetime
+  - sort int(11) key= comment=order of extraction *
+  - func text key= comment=
+  - rule_id int(11) key= comment=rule_id
+  - state tinyint(1) key= comment=state
+
+TABLE t_data_import_file_record rows~38 comment=
+  - id int(11) unsigned key=PRI comment=
+  - rule_id int(11) key= comment=the rule id
+  - file_url varchar(255) key= comment=
+  - data_type varchar(255) key= comment=xlsx
+  - data_json text key= comment=
+  - staff_id int(11) key= comment= *
+  - create_time datetime key= comment=
+
+TABLE t_data_import_record_row rows~43 comment=
+  - id int(11) unsigned key=PRI comment=
+  - file_record_id int(11) key= comment=file record id
+  - data text key= comment=record data row
+  - update_by int(11) key= comment=operate staff id *
+  - create_time datetime key= comment=
+  - update_time datetime key= comment=
+
+TABLE t_data_import_rule rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - remark text key= comment=remark
+  - code varchar(255) key= comment=function code
+  - file_type varchar(255) key= comment=excel,csv,json,xml	
+  - channel_type varchar(255) key= comment=shop,logistics
+  - state tinyint(1) key= comment=state
+
+TABLE t_data_import_type rows~1 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - description text key= comment=description
+  - code tinytext key= comment=code
+  - state tinyint(1) key= comment=state
+  - created_at datetime key= comment=create time
+  - form_id varchar(255) key= comment=the id of the form bond
+
+TABLE t_depart rows~11 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - org_id varchar(255) key= comment=the id of  org
+  - parent_id varchar(255) key= comment=the parent depart
+  - brief text key= comment=brief
+  - contact text key= comment=contact
+  - phone text key= comment=phone
+  - email text key= comment=email
+  - account_type varchar(255) key= comment=account_type
+  - account_id varchar(255) key= comment=account_id
+  - status tinyint(1) key= comment=state
+  - created_at timestamp key= comment=
+  - updated_at timestamp key= comment=update_time
+  - type varchar(255) key= comment=type
+  - created_by int(11) key= comment=
+
+TABLE t_developer rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - secret varchar(255) key= comment=name
+  - bind_staff_id varchar(255) key= comment=the id of the staff who bind the developer *
+  - created_at datetime key= comment=created time
+  - state tinyint(1) key= comment=the state of the developer
+  - scope text key= comment=scope
+
+TABLE t_distribution_station_area rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - distribution_station_id int(11) key= comment=distribution station id
+  - divider_type_id int(11) key= comment=divider type id
+  - name varchar(255) key= comment=name
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_distribution_station_area_value rows~6 comment=
+  - id int(11) unsigned key=PRI comment=
+  - area_id int(11) key= comment=distribution station area id
+  - country_code varchar(255) key= comment=country code
+  - value varchar(255) key= comment=value
+
+TABLE t_documents rows~2225 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - type varchar(255) key= comment=
+  - primary_key varchar(255) key= comment=
+  - doc_url text key= comment=
+  - template_snapshot json key= comment= *
+  - data_snapshot json key= comment=
+  - template_id varchar(255) key= comment= *
+  - search_key text key= comment=all key words of the document
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - meta text key= comment=meta
+
+TABLE t_fee_calculation_log rows~0 comment=费用计算日志表
+  - id int(11) unsigned key=PRI comment=
+  - transaction_id varchar(64) key=MUL comment=业务单号
+  - scene varchar(32) key=MUL comment=场景标识
+  - base_value decimal(12,2) key= comment=计算基准值
+  - quantity int(11) key= comment=件数 *
+  - rule_id int(11) key= comment=关联费用规则ID
+  - rule_name varchar(64) key= comment=规则名称(冗余快照)
+  - calculated_amount decimal(12,2) key= comment=计算出的费用 *
+  - final_amount decimal(12,2) key= comment=应用min/max后最终费用 *
+  - create_time datetime key=MUL comment=创建时间
+
+TABLE t_fee_rule rows~0 comment=费用规则主表
+  - id int(11) unsigned key=PRI comment=
+  - scene varchar(32) key=MUL comment=场景标识: express/taxi/fee
+  - name varchar(64) key= comment=费用名称
+  - fee_type enum('fixed','ratio') key= comment=费用类型: fixed-固定金额, ratio-比例 *
+  - base_on enum('total_value','quantity') key= comment=计费基准: total_value-总金额, quantity-数量 *
+  - value decimal(10,4) key= comment=固定金额或比例值 *
+  - min_fee decimal(10,2) key= comment=最低费用
+  - max_fee decimal(10,2) key= comment=最高费用
+  - priority int(11) key= comment=优先级: 越小越先计算
+  - is_enabled int(1) key= comment=是否启用: 1-启用 0-禁用
+  - start_time datetime key= comment=生效时间
+  - end_time datetime key= comment=失效时间
+  - create_time datetime key= comment=创建时间
+  - update_time datetime key= comment=更新时间
+
+TABLE t_fee_rule_ladder rows~0 comment=阶梯定价表
+  - id int(11) unsigned key=PRI comment=
+  - rule_id int(11) key=MUL comment=关联费用规则ID
+  - min_value decimal(10,2) key= comment=区间下限(含)
+  - max_value decimal(10,2) key= comment=区间上限(不含), NULL表示无上限
+  - type enum('ladder','unit') key= comment=阶梯类型: ladder-阶梯价, unit-单位价
+  - fixed_fee decimal(10,2) key= comment=固定费用
+  - ratio decimal(10,4) key= comment=比例值
+  - unit_fee decimal(10,2) key= comment=按单位费用
+  - sort int(11) key= comment=排序
+  - create_time datetime key= comment=创建时间
+  - update_time datetime key= comment=更新时间
+
+TABLE t_freight_add_value_service rows~28 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - service_code varchar(255) key= comment=name
+  - data_type varchar(20) key= comment=数据类型
+  - fixed_price decimal(10,3) key= comment=fixed_price *
+  - expr_price text key= comment=price expr *
+  - brief text key= comment=brief
+  - applicable_shipper_id varchar(255) key= comment=applicable logistics
+  - applicable_freight_area_ids text key= comment=applicable freight
+  - update_time datetime key= comment=update time
+  - create_time datetime key= comment=create time
+  - state tinyint(1) key= comment=status
+  - calc_by varchar(255) key= comment=calc rule
+
+TABLE t_freight_basis rows~666 comment=
+  - id int(11) unsigned key=PRI comment=
+  - standard_id varchar(255) key= comment=standard id
+  - min_value decimal(10,3) key= comment=
+  - max_value decimal(10,3) key= comment=
+  - unit varchar(255) key= comment=weight unit
+  - expr text key= comment=volume expr
+  - start_value decimal(10,3) key= comment=
+  - initial_price decimal(10,2) key= comment= *
+  - cycle_value decimal(10,3) key= comment=
+  - cycle_price decimal(10,2) key= comment= *
+  - update_time datetime key= comment=update time
+  - create_time datetime key= comment=create time
+  - state tinyint(1) key= comment=status
+  - basis_type varchar(255) key= comment=basis type
+
+TABLE t_freight_calc_temp_values rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - weight decimal(50,5) key= comment=
+  - length decimal(50,5) key= comment=
+  - width decimal(50,5) key= comment=
+  - height decimal(50,5) key= comment=
+  - quantity int(11) key= comment= *
+  - figure text key= comment=
+  - created_time datetime key= comment=create_time
+  - suffix decimal(50,5) key= comment=
+
+TABLE t_freight_standard rows~33 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - area_standard varchar(255) key= comment=authorize
+  - authorize_id varchar(255) key= comment=authorize
+  - brief text key= comment=brief
+  - update_time datetime key= comment=update time
+  - create_time datetime key= comment=create time
+  - state tinyint(1) key= comment=status
+  - shipper_id varchar(32) key= comment=delivery standard id
+  - settlement_currency varchar(3) key= comment=
+  - zipcode_recognition_method varchar(50) key= comment=zipcode recognition method
+
+TABLE t_freight_standard_area rows~1412 comment=
+  - id int(11) unsigned key=PRI comment=
+  - route varchar(255) key= comment=route
+  - figure varchar(255) key= comment=figure
+  - standard_id int(11) key= comment=standard id
+  - freight_id varchar(255) key= comment=freight od
+  - remote_area tinyint(1) key= comment=remote area
+  - create_time datetime key= comment=create_time
+  - update_time datetime key= comment=update_time
+  - state tinyint(1) key= comment=state
+  - effect_country tinytext key= comment=effect country
+
+TABLE t_identity_switching_permission rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - staff_id int(11) key= comment=staff id *
+  - switchable_ids text key= comment=switchable staff identity ids *
+  - create_time datetime key= comment=
+  - update_time datetime key= comment=
+
+TABLE t_import_data_forms rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - description text key= comment=description
+  - created_at datetime key= comment=created_at
+  - state tinyint(1) key= comment=state
+
+TABLE t_import_data_form_fields rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - form_id varchar(255) key= comment=the id of the form
+  - description text key= comment=description
+  - prop varchar(255) key= comment=prop
+  - type varchar(255) key= comment=type
+  - require tinyint(1) key= comment=require
+  - created_at datetime key= comment=created_at
+  - state tinyint(1) key= comment=state
+
+TABLE t_import_data_trans_mapping rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - description text key= comment=description
+  - mapping longtext key= comment=value
+  - state tinyint(1) key= comment=state
+  - created_at datetime key= comment=create time
+  - import_type_id varchar(255) key= comment=the id of import type
+
+TABLE t_import_record rows~22 comment=
+  - id int(11) unsigned key=PRI comment=
+  - origin_file_name varchar(255) key= comment=file name
+  - origin_file longtext key= comment=file name
+  - content_type varchar(255) key= comment=content type
+  - service_id varchar(255) key= comment=service id
+  - subject varchar(255) key= comment=subject
+  - process tinyint(4) key= comment=process:0,start import,1,importing,2,success,4,error
+  - staff_id varchar(255) key= comment=staff id *
+  - created_at datetime key= comment=created at
+  - remark text key= comment=remark
+
+TABLE t_inventory rows~894 comment=
+  - id int(11) unsigned key=PRI comment=
+  - tray_id varchar(255) key= comment=usage
+  - sku_id varchar(255) key= comment=sku id
+  - quantity int(11) key= comment=quantity *
+  - remark text key= comment=remark
+  - updated_at datetime key= comment=
+  - created_at datetime key= comment=
+  - ref_pkg_item_id varchar(255) key= comment=ref order item *
+  - staff_id varchar(255) key= comment=staff *
+  - freeze tinyint(1) key= comment=freeze
+  - status tinyint(1) key= comment=status
+  - batch_no varchar(255) key= comment=batch number
+  - ref_purchase_item_batch_item varchar(255) key= comment=purchase batch number
+  - related_inventory_id varchar(255) key= comment= *
+  - completed int(11) key= comment=是否已经完成
+
+TABLE t_inventory_cost_log rows~33 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sku_id int(10) unsigned key=MUL comment=SKU ID
+  - warehouse_id int(10) unsigned key=MUL comment=仓库ID
+  - tray_id int(10) unsigned key= comment=托盘ID
+  - operation_type varchar(255) key=MUL comment=PurchasePutinType
+  - operation_no varchar(30) key= comment=操作号
+  - batch_no varchar(30) key=MUL comment=批次号 (P-{purchase_id}/T-{log_id}/A-{log_id}/R-{log_id})
+  - quantity int(11) key= comment=数量 (+入库/-出库) *
+  - remaining_quantity int(11) key= comment=(入库)剩余可消耗数量，仅入库记录使用，出库时递减，用于FIFO追踪 *
+  - balance_quantity int(11) key= comment=操作后库存结存数量 *
+  - amount_id int(10) unsigned key= comment=Amount ID (采购价格) *
+  - vat_amount_id int(10) unsigned key=MUL comment=税金 Amount ID *
+  - unit_cost decimal(12,4) key= comment=均价 (EUR) *
+  - unit_vat decimal(12,4) key= comment=单位税金 (EUR)
+  - unit_cost_gross decimal(12,4) key= comment=含税单位成本 (EUR) = unit_cost + unit_vat *
+  - total_cost decimal(12,4) key= comment=总成本 (EUR) *
+  - total_vat decimal(12,4) key= comment=总税金 (EUR)
+  - total_cost_gross decimal(12,4) key= comment=含税总成本 (EUR) = total_cost + total_vat *
+  - ref_type varchar(30) key= comment=关联来源表类型
+  - ref_id int(10) unsigned key= comment=关联ID
+  - consume_details json key= comment=出库消耗的批次明细 JSON
+  - exhausted tinyint(1) key=MUL comment=批次是否已耗尽
+  - staff_id int(10) unsigned key= comment=操作人ID *
+  - remark text key= comment=备注
+  - created_at datetime key=MUL comment=
+  - updated_at datetime key= comment=
+
+TABLE t_inventory_cost_summary rows~13 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sku_id int(10) unsigned key=MUL comment=SKU ID
+  - warehouse_id int(10) unsigned key= comment=仓库ID
+  - quantity int(11) key= comment=库存数量 *
+  - total_cost decimal(18,4) key= comment=总成本 (EUR) *
+  - total_vat decimal(18,4) key= comment=库存总税金 (EUR) *
+  - total_cost_gross decimal(18,4) key= comment=含税总成本 (EUR) *
+  - avg_unit_cost decimal(15,4) key= comment=平均单位成本 (EUR) *
+  - avg_unit_vat decimal(15,4) key= comment=平均单位税金 (EUR)
+  - avg_unit_cost_gross decimal(15,4) key= comment=平均含税单位成本 (EUR) *
+  - active_batch_count int(11) key= comment=活跃批次数量 (未耗尽的入库记录数) *
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_inventory_migrate_task rows~19 comment=
+  - id int(11) unsigned key=PRI comment=
+  - remark varchar(255) key= comment=remark
+  - src_wms_id varchar(255) key= comment=origin warehouse
+  - tar_wms_id varchar(32) key= comment=target warehouse
+  - created_by varchar(255) key= comment=create staff *
+  - third_extra_data text key= comment=extra_data
+  - progress int(11) key= comment=status
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_inventory_migrate_task_item rows~56 comment=库存迁移任务明细表
+  - id int(11) unsigned key=PRI comment=
+  - task_id varchar(255) key= comment=task
+  - sku_id varchar(255) key= comment=sku
+  - quantity tinyint(4) unsigned key= comment=sku_code *
+  - status tinyint(4) unsigned key= comment=状态
+  - async_state int(10) key= comment=product async state
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_inventory_migrate_task_parcel rows~40 comment=
+  - id int(11) unsigned key=PRI comment=
+  - task_id varchar(255) key= comment=任务id
+  - name varchar(11) key= comment=包裹id
+  - carrier_id varchar(255) key= comment=carrier
+  - label varchar(11) key= comment=label
+  - tracking_number varchar(255) key= comment=tracking
+  - income_type varchar(255) key= comment=income type
+  - container_name varchar(255) key= comment=container name
+  - container_gauge varchar(255) key= comment=container gauge
+  - gross_weight decimal(10,2) key= comment=gross weight
+  - status int(11) key= comment=状态
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_inventory_migrate_task_parcel_item rows~62 comment=
+  - id int(11) unsigned key=PRI comment=
+  - parcel_id int(11) key= comment=包裹id
+  - sku_id varchar(255) key= comment=sku
+  - quantity int(11) key= comment=quantity *
+  - task_id int(11) key= comment=migrate task id
+  - state int(11) key= comment=
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_item rows~400 comment=
+  - id int(11) unsigned key=PRI comment=
+  - catalog_id int(11) unsigned key= comment=category id
+  - title text key= comment=title
+  - condition varchar(255) key= comment=
+  - shop_id varchar(100) key= comment=shop id
+  - description text key= comment=description
+  - labels json key= comment=
+  - mpn text key=MUL comment=mpn
+  - brand_id text key= comment=brand_id
+  - attribute json key= comment=
+  - mqq int(11) key= comment=Minimum order quantity *
+  - step int(11) key= comment=Procurement step size
+  - ean text key= comment=global item code
+  - primary_image_key text key= comment=primary image key
+  - images text key= comment=images
+  - video text key= comment=video
+  - meta text key= comment=meta
+  - suggest_price decimal(10,2) key= comment=suggest price *
+  - anchor_price decimal(10,2) key= comment=anchor price *
+  - price decimal(10,2) key= comment=price *
+  - sale_price decimal(10,2) key= comment=sale price *
+  - cost decimal(10,2) key= comment=cost *
+  - weight decimal(10,2) key= comment=weight
+  - length decimal(10,2) key= comment=length
+  - width decimal(10,2) key= comment=width
+  - height decimal(10,2) key= comment=height
+  - in_stock tinyint(1) key= comment=in stock *
+  - shop_sku text key= comment=shop sku
+  - shop_sku_id text key= comment=shop sku id
+  - highlights text key= comment=highlights
+  - weight_unit varchar(255) key= comment=weight unit
+  - length_unit varchar(255) key= comment=weight unit
+  - ref_origin_item_id varchar(255) key= comment=base item
+  - origin_model varchar(255) key= comment=
+  - item_type_inventory_category varchar(255) key= comment=item type *
+  - item_type_id varchar(255) key= comment=usage general
+
+TABLE t_items_container rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - description text key= comment=
+  - dead_weight decimal(10,3) key= comment=
+  - dead_volume decimal(10,3) key= comment=
+  - weight_unit varchar(255) key= comment=
+  - length_unit varchar(255) key= comment=
+
+TABLE t_item_accessory rows~22 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sku_id varchar(255) key= comment=sku id
+  - quantity int(11) key= comment=quantity *
+  - price decimal(10,2) key= comment= *
+  - state tinyint(1) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - accessory_id varchar(255) key= comment=accessor id
+
+TABLE t_item_container_standard rows~159 comment=
+  - id int(11) unsigned key=PRI comment=
+  - item_type int(1) key=MUL comment=1:item;0:sku
+  - item_id int(10) key=MUL comment=product_sku_id
+  - unit_id int(10) key=MUL comment=container_unit_id
+  - count_number int(10) key= comment=count_number
+  - min_value int(10) unsigned key= comment=
+  - state tinyint(1) key=MUL comment=status
+  - creat_by int(10) key= comment=creat_by
+  - update_by int(10) key= comment=update_by
+  - update_time datetime key= comment=update time
+  - create_time datetime key= comment=create time
+  - price decimal(10,2) unsigned key= comment=price *
+  - suit_area varchar(600) key= comment=suit_area
+  - suit_user_group varchar(600) key= comment=suit_user_group *
+
+TABLE t_item_pickup_record rows~0 comment=包裹拣货记录表
+  - id int(11) unsigned key=PRI comment=
+  - tid varchar(255) key= comment=任务ID
+  - sku_id varchar(255) key= comment=商品ID
+  - qty tinyint(4) key= comment=商品数量 *
+  - tray_id varchar(255) key= comment=托盘
+  - ref_table_name varchar(255) key= comment=关联表名
+  - created_by varchar(255) key= comment=创建人
+  - state tinyint(1) key= comment=activate
+  - release tinyint(1) key= comment=released
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_item_purchase_price_snap rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sku_id varchar(255) key= comment=sku id
+  - brand_id decimal(10,0) key= comment=brand id
+  - price decimal(10,2) key= comment= *
+  - created_by varchar(255) key= comment=created staff *
+  - origin_purchase_order varchar(255) key= comment=origin purchase order *
+  - created_at datetime key= comment=created time
+  - updated_at datetime key= comment=updated time
+
+TABLE t_item_type rows~15 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - description text key= comment=description
+  - usage varchar(255) key= comment=usage
+  - sort int(11) key= comment=sort
+
+TABLE t_logistics_tracking_events rows~69 comment=
+  - id int(11) unsigned key=PRI comment=
+  - tracking_no varchar(255) key= comment=tracking number
+  - event_id varchar(255) key= comment=third event id
+  - event_figure varchar(255) key= comment=third event figure
+  - tracking_id varchar(255) key= comment=third tracking id
+  - event_time datetime key= comment=third event time
+  - barcode varchar(255) key= comment=third barcode
+  - remark text key= comment=third remark
+  - warning text key= comment=third warning
+  - stage varchar(255) key= comment=third stage
+  - sub_status varchar(255) key= comment=third sub status
+  - authorize_id varchar(255) key= comment=authorize id
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_marketing_effect_area rows~53 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - action_id int(11) key=MUL comment=
+  - divider_type enum('countryCode','state','city','district','postCode') key= comment=
+  - description varchar(255) key= comment=
+  - alias_value varchar(255) key= comment=
+  - priority int(11) key= comment=
+  - status tinyint(1) key= comment=
+  - effect_station_ids varchar(255) key= comment=
+  - country_code varchar(255) key= comment=countryCode	
+
+TABLE t_marketing_event rows~10 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=event name
+  - overlay tinyint(1) key= comment=
+  - material_type enum('image','video','html','markdown','empty') key= comment=
+  - material longtext key= comment=
+  - priority int(11) key= comment=
+  - rate decimal(10,2) key= comment=
+  - fixed_value tinyint(1) key= comment=fixed value
+  - all_products tinyint(1) key= comment=all products
+  - type_id varchar(255) key= comment=event type
+  - event_item_type_id varchar(255) key= comment=event item type
+  - description text key= comment=event description
+  - start_time datetime key= comment=event start time
+  - end_time datetime key= comment=event end time
+  - status tinyint(1) key= comment=event status
+  - created_by varchar(255) key= comment=created by
+  - updated_at datetime key= comment=update time
+  - created_at datetime key= comment=create time
+  - effect_type enum('current','order') key= comment=
+  - vip_group varchar(255) key= comment=vip group
+
+TABLE t_marketing_event_item rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - code varchar(255) key= comment=
+  - remark text key= comment=
+  - state tinyint(1) key= comment=
+
+TABLE t_marketing_items rows~46 comment=
+  - id int(11) unsigned key=PRI comment=
+  - item varchar(255) key= comment=
+  - price decimal(10,2) key= comment= *
+  - number int(11) key= comment=
+  - is_active tinyint(1) key= comment=
+  - event_id int(11) key= comment=the marketing event id
+  - primary tinyint(1) key= comment=primary
+
+TABLE t_marketing_type rows~1 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(32) key=UNI comment=name
+  - code varchar(32) key= comment=code
+  - description varchar(255) key= comment=description
+  - state tinyint(1) key= comment=status
+  - created_at timestamp key= comment=create time
+
+TABLE t_member rows~13 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - avatar varchar(255) key= comment=avatar
+  - company_name varchar(255) key= comment=company name
+  - tax_number varchar(255) key= comment=tax number
+  - source varchar(255) key= comment=source
+  - billing_address_id varchar(255) key= comment=default billing address_id
+  - shipping_address_id varchar(255) key= comment=default shipping address id
+  - customer_group_id varchar(255) key= comment=default customer group id
+  - bind_manager_id varchar(255) key= comment=bind manager id
+  - remark text key= comment=remark
+  - ref_id varchar(255) key= comment=related mark for the same member
+  - active tinyint(1) key= comment=active
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_member_communication rows~61 comment=
+  - id int(11) unsigned key=PRI comment=
+  - ref_member_id varchar(255) key= comment=member id
+  - comm_type varchar(255) key= comment=Email,Phone,WhatsApp and so on
+  - comm_value varchar(255) key= comment=communication account
+  - state tinyint(1) key= comment=active
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_menus rows~97 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - title text key= comment=title
+  - icon text key= comment=
+  - type varchar(255) key= comment=api or view
+  - slug text key= comment=slug
+  - parent_id text key= comment=parent id
+  - app_id varchar(255) key= comment=api or view
+  - state tinyint(1) key= comment=the state of the route
+  - sort int(11) key= comment=name
+
+TABLE t_micro_service rows~0 comment=micro service
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=shop name
+  - icon text key= comment=icon
+  - brief text key= comment=shop brief
+  - lan_code text key= comment=language code
+  - sale_regions text key= comment=sale regions *
+  - slug text key= comment=slug
+  - state tinyint(1) key= comment=state
+
+TABLE t_migrations rows~501 comment=
+  - version bigint(20) key=PRI comment=
+  - migration_name varchar(100) key= comment=
+  - start_time timestamp key= comment=
+  - end_time timestamp key= comment=
+  - breakpoint tinyint(1) key= comment=
+
+TABLE t_names_space rows~21 comment=
+  - id int(11) unsigned key=PRI comment=
+  - label varchar(255) key= comment=label
+  - value varchar(255) key= comment=value
+  - brief text key= comment=brief
+  - purpose varchar(255) key= comment=purpose
+  - status tinyint(1) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_navigation_link rows~6 comment=导航链接表
+  - id int(11) unsigned key=PRI comment=
+  - title varchar(100) key= comment=标题
+  - catalog_id varchar(255) key= comment=分类id
+  - icon varchar(255) key= comment=图标
+  - url varchar(255) key= comment=链接地址
+  - remark text key= comment=连接说明
+  - sort int(11) unsigned key= comment=排序
+  - recommend int(1) unsigned key= comment=是否推荐
+  - status int(1) unsigned key= comment=状态
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+  - staff_id varchar(250) key= comment=员工id *
+  - color varchar(255) key= comment=
+
+TABLE t_number_generator rows~42 comment=
+  - id int(11) unsigned key=PRI comment=
+  - resource_primary_key int(11) key= comment=
+  - type varchar(255) key= comment=
+  - sort int(11) key= comment=sort
+  - created_at datetime key= comment=created time
+  - format_string text key= comment=
+  - service varchar(255) key= comment= transaction type
+  - usable int(11) key= comment=usable
+
+TABLE t_offline_shipping rows~16 comment=
+  - id int(11) unsigned key=PRI comment=
+  - remark text key= comment=remark
+  - address_id int(11) key= comment=address id
+  - address_img varchar(255) key= comment=the address image
+  - warehouse_id int(11) key= comment=The warehouse id
+  - extra_data text key= comment=extra data
+  - progress int(11) key= comment=progress
+  - order_no varchar(255) key= comment=order number *
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_offline_shipping_detail rows~28 comment=
+  - id int(11) unsigned key=PRI comment=
+  - offline_shipping_id int(11) key= comment=offline shipping id
+  - sku varchar(255) key= comment=sku
+  - sku_id varchar(255) key= comment=The boss sku id
+  - brand varchar(255) key= comment=brand
+  - code varchar(255) key= comment=the product security code
+  - code_image text key= comment=that time, Code photo saved image
+
+TABLE t_offline_shipping_task rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - offline_shipping_no varchar(255) key= comment=The offline shipping number
+  - warehouse_id int(11) key= comment=The warehouse id
+  - offline_shipping_ids text key= comment=offline shipping ids,such as 1,2,3
+  - tracking_number varchar(255) key= comment=tracking number
+  - tracking_type varchar(255) key= comment=tracking type
+  - carrier varchar(255) key= comment=carrier
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_oplog rows~710 comment=
+  - id int(11) unsigned key=PRI comment=
+  - staff_id varchar(250) key= comment=staff *
+  - ip varchar(250) key= comment=ip
+  - url varchar(250) key= comment=url
+  - figure text key= comment=figure
+  - method varchar(250) key= comment=method
+  - params longtext key= comment=params
+  - useragent varchar(250) key= comment=useragent *
+  - log text key= comment=log
+  - create_time datetime key= comment=create_time
+
+TABLE t_options rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - bind_id varchar(255) key= comment=
+  - bind_table varchar(255) key= comment=
+  - key varchar(255) key= comment=
+  - value varchar(255) key= comment=
+  - state tinyint(1) key= comment=state
+
+TABLE t_order rows~154 comment=
+  - id int(11) unsigned key=PRI comment=
+  - shop_id varchar(255) key= comment=shop id
+  - order_no text key= comment=order no *
+  - shop_order_no text key= comment=shop order no *
+  - shipping_standard text key= comment=shipping standard
+  - order_status varchar(255) key= comment=order status *
+  - billing_address varchar(255) key= comment=billing address
+  - shipping_address varchar(255) key= comment=shipping address
+  - shipper_id varchar(255) key= comment=shipper id
+  - remark text key= comment=remark
+  - inv_remark text key= comment=inv remark
+  - ref_order text key= comment=ref_order *
+  - meta text key= comment=meta
+  - transaction_id text key= comment=transaction_id
+  - payment_method text key= comment=payment_method
+  - currency varchar(255) key= comment=currency
+  - purchase_time int(11) key= comment=purchase time
+  - create_time datetime key= comment=create_time
+  - update_time datetime key= comment=
+  - freeze tinyint(1) key= comment=order id *
+  - declare tinyint(1) key= comment=declare
+  - fulfillment_document text key= comment=fulfillment document
+  - sale_staff_id text key= comment=sale staff id *
+  - vip_id text key= comment=vip id
+  - extra_data text key= comment=extra_data
+  - invoice_official text key= comment=invoice_official
+  - invoice_proforma text key= comment=invoice_proforma
+  - show_tel tinyint(1) key= comment=show tel
+  - invoice_without_email tinyint(1) key= comment=show invoice email
+  - perform_without_email tinyint(1) key= comment=show perform email
+  - labels text key= comment=label
+  - expected_shipping_time datetime key= comment=Expected shipping time
+  - latest_updated_time datetime key= comment=latest update time
+  - delivery_time datetime key= comment=Actual finish time
+  - freeze_code int(11) key= comment=freeze_code
+  - delivery_mechanism int(11) key= comment=delivery mechanism
+  - ref_bundle_id varchar(255) key= comment=
+  - vip_group_id int(11) key= comment=vip_group_id
+  - primary_station_id int(11) key= comment=primary station
+  - warehouse_id int(11) key= comment=warehouse id
+  - snapshot text key= comment=tax snapshot
+
+TABLE t_order_amount rows~1859 comment=
+  - id int(11) unsigned key=PRI comment=
+  - currency varchar(250) key= comment=currency
+  - subject text key= comment=subject
+  - amount decimal(10,2) key= comment=amount *
+  - actual_amount_id varchar(255) key= comment=actual amount id *
+  - state tinyint(1) key= comment=state
+  - order_id varchar(255) key= comment=order id *
+  - fee_code varchar(255) key= comment=fee code
+  - create_time datetime key= comment=create_time
+  - update_time datetime key= comment=update_time
+
+TABLE t_order_freeze_inventory_mapping rows~402 comment=订单冻结库存映射表
+  - id int(11) unsigned key=PRI comment=
+  - staff_id varchar(255) key= comment=操作人id *
+  - sku_id varchar(255) key= comment=产品sku
+  - pkg_item_id varchar(255) key= comment=包裹产品ID
+  - freeze_inventory_quantity int(11) key= comment=冻结库存数量 *
+  - warehouse_id varchar(500) key= comment=所属仓库
+  - status tinyint(1) key= comment=状态
+  - release tinyint(1) key= comment=是否释放
+  - created_at timestamp key= comment=创建时间
+  - updated_at timestamp key= comment=更新时间
+  - freeze_type_table varchar(50) key= comment=冻结类型
+
+TABLE t_order_item rows~644 comment=
+  - id int(11) unsigned key=PRI comment=
+  - order_id varchar(255) key= comment=order id *
+  - sku_id varchar(255) key= comment=sku id
+  - original_sku_id varchar(255) key= comment=The original skuId of the converted skuId
+  - quantity int(11) key= comment=quantity *
+  - price varchar(255) key= comment=price *
+  - actual_price_id varchar(255) key= comment=actual price id *
+  - shop_order_item_primary_key varchar(255) key= comment=shop order item primary key *
+  - shop_order_id text key= comment=shop order id *
+  - state tinyint(1) key= comment=status
+  - cargo_id text key= comment=the cargo id
+  - sale_staff_id int(10) unsigned key= comment=sale_staff_id *
+  - adjust_price decimal(10,2) key= comment=adjust price *
+  - actual_adjust_price_id varchar(255) key= comment=actual adjust price id *
+  - discount decimal(10,2) key= comment=discount
+  - actual_discount_amount_id varchar(255) key= comment=actual discount amount id *
+  - vat_amount decimal(10,2) key= comment=vat amount *
+  - actual_vat_amount_id varchar(255) key= comment=actual vat amount id *
+  - meta json key= comment=meta
+  - extra_data json key= comment=extra_data
+  - created_time datetime key= comment=
+  - updated_time datetime key= comment=
+  - bundle_id varchar(255) key= comment=
+  - progress int(11) key= comment=progress
+
+TABLE t_order_item_args rows~1 comment=
+  - id int(11) unsigned key=PRI comment=
+  - order_item_id int(11) key= comment= *
+  - field text key= comment=arguments
+  - value text key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_order_packages rows~547 comment=
+  - id int(11) unsigned key=PRI comment=
+  - order_id varchar(255) key= comment=order id *
+  - name text key= comment=shipping package name
+  - shipper_id varchar(255) key= comment=shipper id
+  - tracking_number text key= comment=tracking number
+  - exchange_number text key= comment=exchange number
+  - tracking_label text key= comment=tracking label
+  - exchange_label text key= comment=exchange label
+  - value_added_service text key= comment=
+  - container_gauge text key= comment=container gauge
+  - fulfillment_document text key= comment=fulfillment document
+  - shipped tinyint(1) key= comment=shipped
+  - fulfillment_warehouse_id text key= comment=fulfillment warehouse
+  - manual_delivery_property text key= comment=manual delivery property
+  - pushed_state tinyint(1) key= comment=pushed state
+  - container_name text key= comment=container name
+  - gross_weight decimal(10,2) key= comment=
+  - container_id varchar(255) key= comment=
+  - carrier_service_code varchar(255) key= comment=
+  - carrier_code varchar(20) key= comment=物流公司编码
+  - print_list text key= comment=print list
+
+TABLE t_order_sales_profit rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - order_id bigint(20) key=MUL comment=order id *
+  - order_item_id bigint(20) key= comment=order item id *
+  - sku_id bigint(20) key= comment=sku id
+  - pkg_item_id bigint(20) key= comment=package id
+  - qty bigint(20) key= comment=数量 *
+  - cost_price decimal(12,3) key= comment=阶段成本价(给业务员锚定的产品价),从变体表获取 *
+  - purchase_price decimal(12,3) key= comment=记录出库采购价 *
+  - sale_price decimal(12,3) key= comment=出库销售价 *
+  - warehouse_id bigint(20) key= comment=warehouse id
+  - state tinyint(1) key=MUL comment=state
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_order_tax rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - order_id varchar(255) key= comment=order id *
+  - tax_id varchar(255) key= comment=tax id
+  - tax_rate decimal(10,2) key= comment=
+  - tax_amount decimal(10,2) key= comment= *
+  - created_at datetime key= comment=
+
+TABLE t_org rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - parent_id varchar(255) key= comment=the parent org
+  - logo text key= comment=logo
+  - icon text key= comment=icon
+  - brief text key= comment=brief
+  - proof text key= comment=proof
+  - vat_number text key= comment=vat_number
+  - address text key= comment=address
+  - contact text key= comment=contact
+  - phone text key= comment=phone
+  - email text key= comment=email
+  - status int(1) key= comment=status
+  - created_at timestamp key= comment=
+  - updated_at timestamp key= comment=
+
+TABLE t_over_sold_mapping rows~374 comment=超卖映射表
+  - id int(11) unsigned key=PRI comment=
+  - product_id int(11) key= comment=商品id
+  - sku_id int(11) key= comment=sku id
+  - wms_id varchar(255) key= comment=warehouse
+  - over_sold_num int(11) key= comment=超卖数量 *
+  - created_by varchar(255) key= comment=创建员工 *
+  - state tinyint(1) key= comment=
+  - expire_time datetime key= comment=过期时间
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_pickup_delivery_package_item rows~39 comment=
+  - id int(11) unsigned key=PRI comment=
+  - task_id int(11) key= comment=pickup task id
+  - declare_name varchar(255) key= comment=declare name
+  - service_code varchar(255) key= comment=service code
+  - length decimal(10,3) key= comment=
+  - width decimal(10,3) key= comment=
+  - height decimal(10,3) key= comment=
+  - length_class varchar(255) key= comment=
+  - weight decimal(10,3) key= comment=
+  - weight_class varchar(255) key= comment=
+  - storage_places int(11) key= comment=quantity *
+  - packages int(11) key= comment=packages
+  - meta_data text key= comment=meta data
+  - extra_data text key= comment=extra data
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_pickup_packages_line rows~327 comment=
+  - id int(11) unsigned key=PRI comment=
+  - pickup_packages_id varchar(255) key=MUL comment=
+  - pkg_id varchar(255) key=MUL comment=
+  - container_related_map_id varchar(255) key= comment=carrier container related map id
+  - state tinyint(1) key=MUL comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_pickup_task rows~184 comment=
+  - id int(11) unsigned key=PRI comment=
+  - pickup_no varchar(255) key= comment=pickup number
+  - warehouse_id int(11) key= comment=warehouse id
+  - pickup_time datetime key= comment=pick up time
+  - end_time datetime key= comment=pick up time
+  - open_time text key= comment=
+  - carrier_id varchar(255) key= comment=
+  - documents text key= comment=documents
+  - status tinyint(1) key=MUL comment=
+  - progress int(10) key= comment=status progress
+  - pickup_address_id varchar(255) key= comment=
+  - gross_weight decimal(10,3) key= comment=
+  - length decimal(10,3) key= comment=
+  - weight_unit varchar(255) key= comment=
+  - length_unit varchar(255) key= comment=
+  - staff_id varchar(255) key= comment= *
+  - remark text key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - width decimal(10,3) key= comment=
+  - height decimal(10,3) key= comment=
+  - delivery_start_time datetime key= comment=delivery start time
+  - delivery_end_time datetime key= comment=delivery end time
+  - delivery_time_remark text key= comment=delivery time remark
+  - hide_dangerous_goods tinyint(1) key= comment=weather show dangerous goods in CMR
+  - cmr_remark text key= comment=the cmr remark
+  - yt_task_id varchar(255) key= comment=yt_task_id
+  - delivery_booking tinyint(1) key= comment=Weather Delivery Booking
+  - note_notice_cus tinyint(1) key= comment=pickup note send to customer
+  - extra_data text key= comment=
+  - reconciliation_id int(11) key= comment=
+  - computing_cost decimal(10,2) key= comment= *
+  - computing_currency varchar(255) key= comment=
+  - settlement_amount decimal(10,2) key= comment= *
+  - settlement_currency varchar(255) key= comment=
+  - exchange_rate decimal(10,2) key= comment=
+  - final_amount decimal(10,2) key= comment=the final amount *
+  - final_currency varchar(255) key= comment=
+  - accounting_state int(11) key= comment=the state of the logistics accounting
+  - reconciliation_date datetime key= comment=
+  - reconciliation_staff int(11) key= comment= *
+  - third_extra_data text key= comment=third extra data
+  - shipping_label_meta text key= comment=面单 记录参数
+
+TABLE t_pickup_task_packages rows~79 comment=
+  - id int(11) unsigned key=PRI comment=
+  - task_id varchar(50) key=MUL comment=task ID
+  - documents text key= comment=documents
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - package_name varchar(255) key= comment=
+  - brief text key= comment=
+  - length decimal(10,3) key= comment=
+  - width decimal(10,3) key= comment=
+  - height decimal(10,3) key= comment=
+  - weight decimal(10,3) key= comment=
+  - weight_unit varchar(10) key= comment=
+  - length_unit varchar(10) key= comment=
+  - container_name varchar(255) key= comment=
+
+TABLE t_pkg_item rows~962 comment=
+  - id int(11) unsigned key=PRI comment=
+  - pkg_id int(11) key= comment=package id
+  - item_id varchar(11) key= comment=order item id *
+  - quantity int(11) key= comment=quantity *
+  - state tinyint(1) key= comment=state
+
+TABLE t_pkg_verify_code rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - pkg_id int(11) key=PRI comment=order package id *
+  - pkg_item_id int(11) key= comment=order item id *
+  - verify_code varchar(255) key= comment=verify code
+  - img text key= comment=image
+  - product_record_map_id varchar(255) key= comment=产品与单据映射表id
+  - sku_uni_code varchar(255) key= comment=unique str
+  - hot_record_id varchar(255) key= comment=河图 trace record id
+  - end tinyint(1) key= comment=weather execution completed
+  - ocr_text text key= comment=ocr text
+  - error_log text key= comment=error log
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_plan_task_record rows~194 comment=
+  - id int(11) unsigned key=PRI comment=
+  - ref_id varchar(255) key= comment=primary id
+  - type varchar(255) key= comment=enumerate type
+  - meta text key= comment=meta
+  - end tinyint(1) key= comment=weather execution completed
+  - staff_id varchar(255) key= comment=staff id *
+  - error_log text key= comment=error log
+  - created_time datetime key= comment=
+  - updated_time datetime key= comment=
+
+TABLE t_price_adjust_history rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - original_price decimal(10,2) key= comment= *
+  - sku_id varchar(255) key= comment=
+  - new_price decimal(10,2) key= comment= *
+  - adjust_by varchar(255) key= comment=
+  - reason text key= comment=
+  - create_time datetime key= comment=create_time
+
+TABLE t_price_advisor_batch rows~220 comment=
+  - id int(11) unsigned key=PRI comment=
+  - batch varchar(300) key= comment=batch id
+  - create_time datetime key= comment=
+
+TABLE t_price_advisor_platform rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - domain varchar(255) key= comment=platform_domain
+  - img varchar(500) key= comment=image
+  - create_time datetime key= comment=
+
+TABLE t_price_advisor_records rows~108902 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sense_id int(11) key= comment=
+  - origin_data_id int(11) key= comment=
+  - sell_id int(11) key= comment=
+  - batch_id int(11) key= comment=
+  - remark text key= comment=remark
+  - price decimal(10,2) key= comment= *
+  - subscribe_id varchar(255) key= comment=
+  - source_price decimal(10,2) key= comment= *
+  - currency varchar(255) key= comment=
+  - source_currency varchar(255) key= comment=
+  - exchange_rate decimal(10,2) key= comment=
+  - self_subscribe_id int(11) key= comment=
+  - item_price decimal(10,2) key= comment= *
+  - diff_price decimal(10,2) key= comment= *
+  - origin_create_time datetime key= comment=
+  - mark int(11) key= comment=
+  - create_time datetime key= comment=create_time
+
+TABLE t_price_advisor_sell rows~170 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(300) key= comment=name
+  - verify_code varchar(300) key= comment=
+  - engine_id int(11) key= comment=
+  - remark text key= comment=remark
+  - create_time datetime key= comment=
+
+TABLE t_price_advisor_subscribe rows~204 comment=
+  - id int(11) unsigned key=PRI comment=
+  - item_model_primary varchar(255) key= comment=
+  - advisor_platform_id int(11) unsigned key= comment=advisor platform id
+  - source_name varchar(255) key= comment=
+  - subscribe_primary varchar(255) key= comment=
+  - remark text key= comment=remark
+  - url text key= comment=
+  - progress int(11) key= comment=
+  - state tinyint(1) key= comment=
+
+TABLE t_price_tracking_configure rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - type varchar(255) key= comment=type
+  - model_item_id varchar(255) key= comment=
+  - auto_adjust_rate decimal(10,2) key= comment=
+  - auto_adjust_price_type text key= comment= *
+  - max_price_range decimal(10,2) key= comment=Min trigger price range *
+  - min_price_range decimal(10,2) key= comment=Max trigger price range *
+  - auto_adjust_formula text key= comment=
+  - notice_staff int(11) key= comment= *
+  - notice_type varchar(255) key= comment=
+  - notice_info varchar(255) key= comment=
+  - state tinyint(1) key= comment=
+
+TABLE t_product_min_order_quantity rows~15 comment=
+  - id int(11) unsigned key=PRI comment=
+  - container_id int(10) key=MUL comment=container_id
+  - min int(10) unsigned key= comment=min
+  - step int(10) key= comment=step
+  - state tinyint(1) key= comment=status
+  - max int(10) unsigned key= comment=max
+  - price decimal(10,2) unsigned key= comment=price *
+  - suit_area varchar(600) key= comment=suit_area
+  - suit_user_group varchar(600) key= comment=suit_user_group *
+
+TABLE t_product_record_map rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sku_id varchar(255) key= comment=sku id
+  - ref_type varchar(255) key= comment=关联记录 类型 order, purchase 等等 *
+  - ref_id varchar(255) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_product_tiered_pricing rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - container_unit_id int(10) key= comment=container_unit_id
+  - item_type int(1) key= comment=1:item;0:sku
+  - suit_area varchar(600) key= comment=suit_area
+  - suit_user_group varchar(600) key= comment=suit_user_group *
+  - extend_suit_area varchar(600) key= comment=extend_suit_area
+  - min int(10) key= comment=min
+  - max int(10) key= comment=max
+  - step_value int(10) key= comment=step_value
+  - mqq int(10) key= comment=mqq
+
+TABLE t_profile rows~24 comment=
+  - id int(11) unsigned key=PRI comment=
+  - user_id varchar(255) key= comment= *
+  - real_name varchar(255) key= comment=real name
+  - avatar text key= comment=
+  - notification_account text key= comment=
+  - notification_type text key= comment=
+  - gender tinyint(1) key= comment=
+  - birthday date key= comment=
+  - roles text key= comment=
+  - position text key= comment=
+  - authority_scope text key= comment=
+  - currency_work_warehouse varchar(255) key= comment=
+  - widget_ids text key= comment=usable widget ids
+
+TABLE t_purchase rows~51 comment=
+  - id int(11) unsigned key=PRI comment=
+  - supplier_id varchar(255) key=MUL comment=brand id
+  - batch_no varchar(255) key= comment=batch no
+  - purchaser_id varchar(255) key= comment=purchase staff id *
+  - transaction_id varchar(255) key= comment=transaction id
+  - ref_purchase_order_id varchar(255) key= comment=referer purchaser order id *
+  - receipt_no varchar(255) key= comment=invoice no
+  - currency varchar(255) key= comment=settlement currency
+  - remark text key= comment=remark
+  - status tinyint(4) key= comment=status id
+  - freeze tinyint(1) key= comment=status id
+  - created_at datetime key= comment=created time
+  - updated_at datetime key= comment=updated time
+  - third_extra_data text key= comment=extra_data
+  - progress varchar(100) key= comment=progress
+  - ref_bundle_id varchar(255) key= comment=ref bundle id
+
+TABLE t_purchase_item rows~468 comment=
+  - id int(11) unsigned key=PRI comment=
+  - purchase_id varchar(255) key= comment=purchase id
+  - figure varchar(255) key= comment=purchase figure
+  - sku_id varchar(255) key= comment=variant id
+  - quantity int(11) key= comment=quantity *
+  - snap_actual_price_id int(10) unsigned key= comment= *
+  - snap_purchase_price_id int(10) unsigned key= comment= *
+  - vat_amount_id int(10) unsigned key=MUL comment=税金 Amount ID *
+  - taxation decimal(10,2) key= comment=taxation
+  - state tinyint(1) key= comment=
+  - async_state int(10) key= comment=product async state
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - ref_order_package_item_id varchar(100) key= comment=referer package order item  id *
+  - wms_id varchar(255) key= comment=the target warehouse
+  - supplier_id varchar(255) key= comment=
+  - progress varchar(100) key= comment=progress
+  - remark text key= comment=remark
+  - arrived int(11) key= comment=是否已到货
+
+TABLE t_purchase_item_related_order_item_mapping rows~46 comment=采购单与订单商品关联表
+  - id int(11) unsigned key=PRI comment=
+  - purchase_item_id int(11) key= comment=采购单商品id
+  - order_item_id int(11) key= comment=订单商品id *
+  - quantity int(11) key= comment=关联产品数量 *
+  - arrived tinyint(1) key= comment=是否到货
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_purchase_pecking rows~44 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=the pkg name
+  - purchase_id int(11) key= comment=The purchase task id
+  - tracking_number varchar(255) key= comment=the tracking number
+  - tracking_type varchar(255) key= comment=the tracking type
+  - remark text key= comment=the remark
+  - income_type varchar(255) key= comment=income type
+  - container_name varchar(255) key= comment=container name
+  - container_gauge varchar(255) key= comment=container gauge
+  - gross_weight decimal(10,2) key= comment=gross weight
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - status tinyint(1) key= comment=status
+
+TABLE t_purchase_pecking_item rows~68 comment=
+  - id int(11) unsigned key=PRI comment=
+  - purchase_package_id varchar(255) key= comment=purchase pecking id
+  - sku_id varchar(255) key= comment=sku id
+  - quantity int(11) key= comment=quantity *
+  - state tinyint(1) key= comment=
+
+TABLE t_purchase_receipt_record rows~67 comment=采购收货记录表
+  - id int(11) unsigned key=PRI comment=
+  - staff_id varchar(20) key= comment=员工id *
+  - item_id varchar(255) key= comment=包裹产品ID
+  - sku_id int(11) unsigned key= comment=采购商品
+  - quantity int(11) key= comment= *
+  - pattern varchar(255) key= comment=处理类型
+  - purchase_id varchar(255) key= comment=purchase
+  - purchase_pecking_id int(11) key= comment=The purchase pecking item id
+  - resolved tinyint(1) key= comment=
+  - created_by varchar(255) key= comment=
+  - create_time timestamp key= comment=
+  - update_time timestamp key= comment=
+
+TABLE t_purchase_sku_transfer rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - purchase_id varchar(255) key= comment=
+  - sku_trans_map_id varchar(255) key= comment=
+  - state tinyint(1) key= comment=state
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_query_label rows~5 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key=UNI comment=name
+  - usage varchar(255) key= comment=usage
+  - remark varchar(255) key= comment=remark
+  - filter json key= comment=query criteria
+  - created_time datetime key= comment=
+  - state tinyint(1) key= comment=state
+
+TABLE t_report_object_group rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - staff_id varchar(255) key= comment=the id of the staff who created the group *
+  - brief text key= comment=brief
+  - object_staff_ids text key= comment=brief *
+  - created_at datetime key= comment=name
+  - updated_at datetime key= comment=name
+  - state tinyint(1) key= comment=the state of the group
+  - primary tinyint(1) key= comment=if the group is a primary group
+
+TABLE t_resource_categories rows~82 comment=
+  - id int(11) unsigned key=PRI comment=
+  - parent_id int(11) key= comment=parent_id
+  - name varchar(255) key= comment=name
+  - meta_tags text key= comment=meta tags
+  - meta_description varchar(255) key= comment=the description of the category
+  - lan_code varchar(255) key= comment=the language code
+  - slug varchar(255) key= comment=the slug of the category
+  - app_id varchar(255) key= comment=the app of the resource
+  - resource_type_id varchar(255) key= comment=the id  of the resource type
+  - channel_id int(11) key= comment=
+  - site_id int(11) key= comment=the site id
+  - regions varchar(255) key= comment=the id  of the branch team
+  - brief text key= comment=the brief of the category
+  - meta text key= comment=meta
+  - created_at datetime key= comment=created time
+  - state tinyint(1) key= comment=
+  - sort int(11) key= comment=排序值
+  - item_type_id varchar(255) key= comment=
+  - code varchar(128) key= comment=分类用 code
+
+TABLE t_resource_type rows~10 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=the resource name
+  - code varchar(255) key= comment=the code of the resource
+  - brief text key= comment=brief
+  - bind_form_standard text key= comment=the fields of the resource
+  - ext text key= comment=ext
+  - state tinyint(1) key= comment=the state of the resource
+
+TABLE t_role rows~12 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - depart_id int(10) key= comment=id of depart
+  - status int(1) key= comment=status
+  - created_at timestamp key= comment=
+  - updated_at timestamp key= comment=update_time
+  - authority_scope text key= comment=authority_scope
+
+TABLE t_salesperson_permit rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - member_id bigint(20) key=MUL comment=address id
+  - count bigint(20) key= comment=允许下单次数，默认99999999999999表示无限次
+  - used_count bigint(20) key= comment=已使用次数
+  - expire datetime key=MUL comment=过期时间, 默认 2100-01-01
+  - staff_id int(11) key=MUL comment=允许的员工ID，0表示不限制员工 *
+  - remark text key= comment=备注说明
+  - state tinyint(1) key=MUL comment=state
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_scan_notification_record rows~6 comment=
+  - id int(11) unsigned key=PRI comment=
+  - request_id varchar(255) key= comment=请求ID
+  - matched tinyint(1) key= comment=是否匹配到商品
+  - raw_data text key= comment=原始回调数据(JSON)
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_scene rows~6 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - remark text key= comment=remark
+  - code varchar(255) key=UNI comment=
+  - data_func varchar(255) key= comment=
+  - state tinyint(1) key= comment=state
+
+TABLE t_setting rows~30 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - type varchar(255) key= comment=type
+  - namespace varchar(255) key= comment=namespace
+  - value text key= comment=value
+  - json_data tinyint(1) key= comment=is json data
+  - created_at datetime key= comment=创建时间
+
+TABLE t_settlement rows~81 comment=
+  - id int(11) unsigned key=PRI comment=
+  - billing_id varchar(255) key= comment=可能多个billing_id
+  - payment_channel varchar(255) key= comment=
+  - income_type int(1) key= comment=1 或者 -1
+  - amount_id varchar(255) key= comment= *
+  - actual_amount_id varchar(255) key= comment=actual amount id *
+  - create_by varchar(255) key= comment=created staff id *
+  - state tinyint(1) key= comment=state
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_shelves rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - sort tinyint(4) key= comment=the sort pickup
+  - barcode varchar(255) key= comment=barcode
+  - area_id varchar(255) key= comment=area id
+  - brief text key= comment=brief
+  - status tinyint(1) key= comment=status
+
+TABLE t_shipper rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=shop name
+  - brief text key= comment=shop brief
+  - lan_code text key= comment=language code
+  - sale_regions text key= comment=sale regions *
+  - state tinyint(1) key= comment=state
+  - description text key= comment=description
+  - delivery_stations text key= comment=stations
+
+TABLE t_similar_site rows~5 comment=
+  - id int(11) unsigned key=PRI comment=
+  - primary tinyint(1) key=PRI comment=primary site
+  - name varchar(255) key= comment=name
+  - url varchar(255) key= comment=declare name
+  - icon varchar(255) key= comment=icon
+  - meta_keywords varchar(255) key= comment=meta keywords
+  - meta_description varchar(600) key= comment=meta description
+  - country_code varchar(255) key= comment=country_code
+  - whois text key= comment=whois
+  - site_history text key= comment=site history
+  - data_json text key= comment=origin json
+  - discard tinyint(1) key= comment=the site junk
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_sites rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(250) key= comment=
+  - title varchar(250) key= comment=
+  - authorize_id varchar(255) key= comment=
+  - meta_description varchar(250) key= comment=
+  - meta_keywords varchar(250) key= comment=
+  - header_scripts text key= comment=
+  - footer_scripts text key= comment=
+  - theme varchar(250) key= comment=
+  - status tinyint(1) key= comment=
+  - meta json key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - user_groups varchar(255) key= comment= *
+  - logo text key= comment=
+  - favicon text key= comment=
+  - slogan varchar(255) key= comment=
+
+TABLE t_site_domains rows~1 comment=
+  - id int(11) unsigned key=PRI comment=
+  - domain varchar(255) key=MUL comment=
+  - site_id int(11) key=MUL comment=
+  - icp_number varchar(255) key= comment=
+  - ga_number varchar(255) key= comment=
+  - is_primary tinyint(1) key=MUL comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_site_slug rows~19 comment=
+  - id int(11) unsigned key=PRI comment=
+  - site_id varchar(255) key=MUL comment=
+  - slug varchar(255) key= comment=
+  - type varchar(255) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - primary_key varchar(255) key= comment=
+
+TABLE t_sku_hscode_mapping rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - country_code varchar(255) key= comment=country code
+  - sku_id varchar(255) key= comment=sku id
+  - hscode varchar(255) key= comment=hs code
+
+TABLE t_sku_transfer_mapping rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sku_id int(11) key= comment=sku_id
+  - transfer_id int(11) key= comment=transfer_id
+  - state tinyint(1) key= comment=
+  - created_by varchar(255) key= comment=
+  - usage varchar(255) key= comment=
+  - created_at timestamp key= comment=
+  - updated_at timestamp key= comment=
+
+TABLE t_sort_mapping rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - sort bigint(20) key= comment=排序大小
+  - ref_usage varchar(30) key=MUL comment=用途
+  - ref_table varchar(30) key=MUL comment=关联来源表
+  - ref_id int(10) unsigned key=MUL comment=关联ID
+  - state tinyint(1) key=MUL comment=state
+
+TABLE t_special_price_rule rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - remark text key= comment=remark
+  - customer_id varchar(255) key= comment=customer id
+  - group_id int(11) key= comment=customer group id
+  - max_count int(11) key= comment=max_count
+  - item_type varchar(255) key= comment=item or sku
+  - item_id int(11) key= comment=item or sku id
+  - price_rule varchar(255) key= comment=price rule *
+  - start_time datetime key= comment=start time
+  - end_time datetime key= comment=end time
+  - create_by int(11) key= comment=create staff id *
+  - create_time datetime key= comment=
+  - state tinyint(1) key= comment=the state of the rule
+
+TABLE t_storeroom rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - warehouse_id varchar(255) key= comment=warehouse id
+  - director_id varchar(255) key= comment=director id
+  - comm_id varchar(255) key= comment=comm id
+  - brief text key= comment=brief
+  - status tinyint(1) key= comment=status
+
+TABLE t_storeroom_area rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - sort tinyint(4) key= comment=the sort pickup
+  - storeroom_id varchar(255) key= comment=storeroom id
+  - brief text key= comment=brief
+  - status tinyint(1) key= comment=status
+  - transfer_area tinyint(1) key= comment=transfer area
+
+TABLE t_subsidiaries rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=son company name
+  - tax_number varchar(255) key= comment=tax number
+  - address_id int(11) key= comment=address_id
+  - region_id int(11) key=UNI comment=region id
+  - state tinyint(1) key=MUL comment=state
+  - create_time datetime key= comment=
+  - update_time datetime key= comment=
+
+TABLE t_supplier rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - logo text key= comment=logo
+  - remark text key= comment=logo
+  - local_country_code varchar(255) key= comment=local country code
+  - certificate_number varchar(255) key= comment=certificate number
+  - address_id varchar(255) key= comment=address
+  - settlement_address_id varchar(255) key= comment=settlement address
+  - code varchar(255) key= comment=
+  - state tinyint(1) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+
+TABLE t_taxa_area_value rows~616 comment=
+  - id int(11) unsigned key=PRI comment=
+  - value varchar(255) key= comment=Taxon area value
+  - area_id varchar(255) key= comment=Area ID
+  - country_code varchar(255) key= comment=
+
+TABLE t_tax_area rows~23 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=tax area
+  - code varchar(255) key=MUL comment=tax area code
+  - divider_type_id varchar(255) key= comment=divider type
+  - tax_standard_id varchar(255) key= comment=standard
+  - effect_stations varchar(255) key= comment=effect stations
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - create_by_id varchar(255) key= comment=
+  - latest_updated_by_id varchar(255) key= comment=
+  - vip_group_ids varchar(255) key=MUL comment=
+
+TABLE t_tax_area_type rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - code varchar(255) key= comment=
+  - remark varchar(255) key= comment=
+  - state tinyint(1) key= comment=
+
+TABLE t_tax_spec rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key=MUL comment=
+  - attachment_area_ids varchar(255) key= comment=
+  - spec_type varchar(255) key= comment=
+  - spec_values text key= comment=
+  - rate decimal(20,2) key= comment=
+  - priority int(11) key= comment=
+  - lump_sum tinyint(1) key= comment=lump-sum tax
+  - effect_stations text key= comment=effect stations
+  - vip_group_ids text key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - create_by_id varchar(255) key= comment=
+  - latest_updated_by_id varchar(255) key= comment=
+
+TABLE t_tax_standard rows~13 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key=MUL comment=tax name
+  - remark text key= comment=tax remark
+  - rate decimal(10,2) key= comment=
+  - type_id varchar(255) key= comment=tax type
+  - usage_id int(11) key= comment=tax sort
+  - lump_sum tinyint(1) key= comment=lump-sum tax
+  - status tinyint(1) key= comment=tax status
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - create_by_id varchar(255) key= comment=
+  - latest_updated_by_id varchar(255) key= comment=
+
+TABLE t_tax_type rows~1 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - code varchar(255) key= comment=code,such as item carrier payment
+
+TABLE t_tax_usage rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - remark text key= comment=remark
+  - code varchar(255) key= comment=code,such as item carrier payment
+  - state tinyint(1) key= comment=state
+
+TABLE t_template rows~36 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(100) key= comment=name
+  - catalog_id varchar(255) key= comment=catalog id
+  - template_type_id varchar(255) key= comment=template type id *
+  - template longtext key= comment=template *
+  - attachment text key= comment=
+  - copies int(11) key= comment=copies
+  - status tinyint(1) key= comment=state
+  - created_by varchar(255) key= comment=created by
+  - create_time datetime key= comment=create_time
+  - description text key= comment=description
+  - title_template varchar(255) key= comment=title template *
+  - usage_id varchar(255) key= comment=usage
+  - paper_size varchar(255) key= comment=usage
+  - bind_id varchar(255) key= comment=resource id
+  - orientation varchar(255) key= comment=orientation
+  - send_type varchar(255) key= comment=send type
+  - header_script text key= comment=header script
+  - footer_script text key= comment=footer script
+  - paper_arguments text key= comment=paper arguments
+  - labels text key= comment=label
+  - figure json key= comment=
+  - ref_table varchar(255) key= comment=ref table
+  - ref_id varchar(255) key= comment=ref id
+
+TABLE t_template_type rows~10 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - description text key= comment=
+  - code varchar(255) key= comment=
+  - data_simple_func varchar(255) key= comment=
+  - create_time datetime key= comment=create_time
+  - status tinyint(1) key= comment=template type status *
+
+TABLE t_tiered_price rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - product_id varchar(255) key=MUL comment=product id
+  - group_id varchar(255) key= comment=groups id,multi
+  - region_id varchar(255) key= comment=regions id,multi
+  - add_filter text key= comment=add filter rule
+  - item_type int(11) key= comment=item type: item for 1 and variant for 2
+  - min_quantity int(11) key= comment=min quantity *
+  - max_quantity int(11) key= comment=max quantity *
+  - state tinyint(1) key= comment=state
+  - price decimal(10,2) key= comment= *
+
+TABLE t_tools_box rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - remark text key= comment=
+  - icon varchar(2000) key= comment=
+  - state tinyint(1) key= comment=
+  - staff text key= comment=staffs *
+  - widget text key= comment=widget_ids
+
+TABLE t_tools_box_widgets rows~8 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=
+  - description varchar(255) key= comment=
+  - state tinyint(1) key= comment=
+  - code varchar(255) key= comment=
+  - default_arguments json key= comment=default arguments
+
+TABLE t_tpflow rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - title varchar(100) key= comment=流程标题
+  - description text key= comment=流程描述
+  - flow_type varchar(50) key= comment=工作流类型: approval/process/dynamic
+  - status int(1) key= comment=状态 1启用 0禁用
+  - del int(1) key= comment=删除状态 1删除 0正常
+  - create_time int(11) key= comment=创建时间
+  - update_time int(11) key= comment=更新时间
+  - form_config text key= comment=流程级表单配置(JSON)
+
+TABLE t_tpflow_comment rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - instance_id int(11) key=MUL comment=实例ID
+  - task_id int(11) key=MUL comment=任务ID
+  - user_id varchar(100) key= comment=评论人 *
+  - content text key= comment=评论内容
+  - create_time int(11) key= comment=创建时间
+
+TABLE t_tpflow_history rows~0 comment=工作流历史/审计日志（append-only）
+  - id int(11) unsigned key=PRI comment=
+  - instance_id int(11) key=MUL comment=tpflow_instance.id
+  - node_id varchar(64) key= comment=节点 ID，可空（实例级事件）
+  - actor_id int(11) key=MUL comment=操作人 admin.id，可空（系统事件）
+  - event varchar(32) key= comment=事件名 start/approve/reject/return/transfer/add_signer/timeout/terminate/hook_succeeded/hook_failed/cc
+  - detail text key= comment=事件详情 JSON（决策意见、节点跳转、Hook 响应等）
+  - created_at timestamp key= comment=事件发生时间
+
+TABLE t_tpflow_instance rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - flow_id int(11) key=MUL comment=流程ID
+  - business_id varchar(100) key=MUL comment=业务ID
+  - business_type varchar(50) key= comment=业务类型
+  - status varchar(50) key= comment=实例状态 running/completed/canceled
+  - current_node varchar(50) key= comment=当前节点
+  - data text key= comment=流程数据
+  - del int(1) key= comment=删除状态 1删除 0正常
+  - create_time int(11) key= comment=创建时间
+  - update_time int(11) key= comment=更新时间
+  - create_by int(10) key= comment=发起人用户ID
+  - create_by_name varchar(255) key= comment=发起人姓名
+
+TABLE t_tpflow_line rows~29 comment=
+  - id int(11) unsigned key=PRI comment=
+  - flow_id int(11) key=MUL comment=流程ID
+  - from varchar(50) key= comment=起始节点
+  - to varchar(50) key= comment=目标节点
+  - condition text key= comment=连线条件
+  - create_time int(11) key= comment=创建时间
+
+TABLE t_tpflow_node rows~31 comment=
+  - id int(11) unsigned key=PRI comment=
+  - flow_id int(11) key=MUL comment=流程ID
+  - name varchar(100) key= comment=节点名称
+  - type varchar(50) key= comment=节点类型 user/push/api *
+  - sort int(11) key= comment=排序
+  - config text key= comment=节点配置
+  - create_time int(11) key= comment=创建时间
+  - form_config text key= comment=节点级动态表单配置(JSON)
+  - hook_handler varchar(255) key= comment=Hook处理器类名
+  - hook_config text key= comment=Hook 处理器参数 JSON
+  - assignees text key= comment=审批人配置 JSON {departments, positions, users} *
+  - type_config text key= comment=节点类型差异化配置 JSON（按 NodeTypeSchema 校验）
+
+TABLE t_tpflow_task rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - instance_id int(11) key=MUL comment=实例ID
+  - node_id int(11) key= comment=节点ID
+  - assignee varchar(100) key=MUL comment=处理人
+  - status varchar(50) key= comment=任务状态 pending/processed
+  - action varchar(50) key= comment=处理动作 pass/reject
+  - remark text key= comment=处理备注
+  - create_time int(11) key= comment=创建时间
+  - update_time int(11) key= comment=更新时间
+
+TABLE t_tpflow_trace rows~0 comment=工作流操作溯源表
+  - id int(11) unsigned key=PRI comment=
+  - instance_id int(11) key=MUL comment=流程实例ID
+  - task_id int(11) key=MUL comment=任务ID (0=系统操作)
+  - node_name varchar(100) key= comment=当前节点名称
+  - action varchar(50) key=MUL comment=操作类型: start/pass/reject/comment/cancel/timeout/handler_before/handler_after
+  - operator_type varchar(20) key= comment=操作者类型: user/system/handler/api *
+  - operator_id varchar(100) key=MUL comment=操作者ID
+  - operator_name varchar(100) key= comment=操作者名称（快照）
+  - from_node varchar(100) key= comment=来自哪个节点（流转记录）
+  - to_node varchar(100) key= comment=去到哪个节点（流转记录）
+  - content text key= comment=操作内容/备注
+  - form_data text key= comment=提交的表单数据 (JSON)
+  - context_snapshot text key= comment=上下文快照 (JSON) - handler执行时的完整上下文
+  - result varchar(20) key= comment=操作结果: success/fail/skip
+  - error_message text key= comment=错误信息（如果失败）
+  - duration_ms int(11) key= comment=执行耗时（毫秒）
+  - seq int(11) key= comment=操作序号（按顺序）
+  - create_time int(11) key=MUL comment=创建时间戳
+
+TABLE t_tpflow_workflow_handler rows~6 comment=工作流处理器注册表
+  - id int(11) unsigned key=PRI comment=
+  - class_name varchar(255) key=UNI comment=类名
+  - class_path varchar(500) key= comment=完整类路径
+  - label varchar(255) key= comment=显示标签
+  - file_path varchar(500) key= comment=文件路径
+  - exists tinyint(1) key=MUL comment=文件是否存在
+  - enabled tinyint(1) key=MUL comment=是否启用
+  - scan_time int(11) key= comment=最后扫描时间
+  - create_time int(11) key= comment=创建时间
+  - update_time int(11) key= comment=更新时间
+
+TABLE t_translate rows~13390 comment=
+  - id int(11) unsigned key=PRI comment=
+  - scope text key=MUL comment=
+  - src varchar(255) key= comment=
+  - tar varchar(255) key= comment=
+  - text text key= comment=
+  - trans text key= comment=
+  - state tinyint(1) key= comment=
+  - created_at datetime key= comment=
+  - updated_at datetime key= comment=
+  - usage varchar(10) key= comment=
+
+TABLE t_upload_record rows~369 comment=
+  - id int(11) unsigned key=PRI comment=
+  - filename text key= comment=
+  - figure text key= comment=
+  - mime_type varchar(255) key= comment=
+  - url varchar(255) key= comment=
+  - file_size int(11) key= comment=
+  - create_time datetime key= comment=create_time
+
+TABLE t_variants rows~455 comment=
+  - id int(11) unsigned key=PRI comment=
+  - product_id varchar(255) key= comment=product id
+  - mqq int(11) key= comment=Minimum order quantity *
+  - step int(11) key= comment=Procurement step size
+  - standard text key= comment=standard
+  - ean text key= comment=global item code
+  - sku text key=MUL comment=sku
+  - price decimal(10,2) key= comment=price *
+  - sale_price decimal(10,2) key= comment=sale price *
+  - cost decimal(10,2) key= comment=cost *
+  - weight decimal(10,2) key= comment=weight
+  - length decimal(10,2) key= comment=length
+  - width decimal(10,2) key= comment=width
+  - height decimal(10,2) key= comment=height
+  - in_stock tinyint(1) key= comment=in stock *
+  - shop_sku text key= comment=shop sku
+  - shop_sku_id text key= comment=shop sku id
+  - weight_unit varchar(255) key= comment=weight unit
+  - length_unit varchar(255) key= comment=weight unit
+  - suggest_price decimal(10,2) key= comment=suggest_price *
+  - over_sale_value int(11) key= comment=over sale value *
+  - ref_origin_sku_id varchar(255) key= comment=base variant
+  - primary_cargo json key= comment=
+  - dg tinyint(1) key= comment=
+  - dg_standard varchar(255) key= comment=
+  - dg_amr_version varchar(255) key= comment=
+  - origin_sku varchar(255) key= comment=
+  - inv_sort int(10) key= comment=inv sort
+  - hs_code varchar(255) key= comment=hs code
+  - unit varchar(255) key= comment=unit
+  - details_support tinyint(1) key= comment=details support
+
+TABLE t_verification_code rows~129 comment=
+  - id int(11) unsigned key=PRI comment=
+  - staff_id int(11) key= comment= *
+  - verify_code varchar(255) key= comment=
+  - create_time datetime key= comment=
+  - state int(4) key= comment=the state of code
+
+TABLE t_wallet_account rows~3 comment=
+  - id int(11) unsigned key=PRI comment=
+  - owner_type varchar(32) key=MUL comment=持有者类型：supplier/buyer/member
+  - owner_id varchar(255) key= comment=持有者ID
+  - currency varchar(10) key= comment=货币代码
+  - balance_amount_id varchar(255) key=MUL comment=当前可用余额 Amount ID *
+  - frozen_balance_amount_id varchar(255) key=MUL comment=冻结金额 Amount ID *
+  - total_income_amount_id varchar(255) key= comment=累计收入 Amount ID *
+  - total_expense_amount_id varchar(255) key= comment=累计支出 Amount ID *
+  - default_payment_channel_id varchar(255) key=MUL comment=默认支付通道 Authorize ID
+  - status int(1) key=MUL comment=状态：0-禁用，1-启用
+  - version int(11) key= comment=乐观锁版本号
+  - created_at timestamp key=MUL comment=创建时间
+  - updated_at timestamp key= comment=更新时间
+
+TABLE t_wallet_transaction rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - account_id int(11) unsigned key=MUL comment=钱包账户ID
+  - transaction_no varchar(64) key=UNI comment=交易流水号
+  - transaction_type varchar(32) key= comment=交易类型
+  - amount_id varchar(255) key= comment=变动金额 Amount ID *
+  - balance_before_id varchar(255) key= comment=变动前余额 Amount ID *
+  - balance_after_id varchar(255) key= comment=变动后余额 Amount ID *
+  - fee_id varchar(255) key= comment=手续费 Amount ID *
+  - related_type varchar(32) key=MUL comment=关联业务类型：billing/settlement/purchase/order *
+  - related_id varchar(255) key= comment=关联业务ID
+  - settlement_id varchar(255) key=MUL comment=直接关联结算ID
+  - payment_channel_id varchar(255) key=MUL comment=支付通道 Authorize ID
+  - remark varchar(500) key= comment=备注说明
+  - operator_id int(11) key= comment=操作员ID
+  - operator_name varchar(128) key= comment=操作员姓名
+  - status varchar(16) key=MUL comment=状态：pending/approved/rejected/failed
+  - auditor_id int(11) key= comment=审核员ID
+  - auditor_name varchar(128) key= comment=审核员姓名
+  - audit_remark varchar(500) key= comment=审核意见
+  - audit_time timestamp key= comment=审核时间
+  - created_at timestamp key= comment=创建时间
+  - updated_at timestamp key= comment=更新时间
+
+TABLE t_wallet_withdraw_apply rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - account_id int(11) unsigned key=MUL comment=钱包账户ID
+  - apply_no varchar(64) key=UNI comment=申请单号
+  - amount_id varchar(255) key=MUL comment=提现金额 Amount ID *
+  - fee_id varchar(255) key=MUL comment=手续费 Amount ID *
+  - bank_info text key= comment=收款银行信息（JSON）
+  - payment_channel_id varchar(255) key=MUL comment=提现支付通道 Authorize ID
+  - remark varchar(500) key= comment=申请备注
+  - applicant_id int(11) key= comment=申请人ID
+  - applicant_name varchar(128) key= comment=申请人姓名
+  - transaction_id int(11) key=MUL comment=关联的钱包交易流水ID
+  - settlement_id varchar(255) key=MUL comment=关联结算ID
+  - status varchar(16) key=MUL comment=状态：pending/approved/rejected/paid
+  - auditor_id int(11) key= comment=审核人ID
+  - auditor_name varchar(128) key= comment=审核人姓名
+  - audit_remark varchar(500) key= comment=审核意见
+  - audit_time timestamp key= comment=审核时间
+  - payment_time timestamp key= comment=打款时间
+  - created_at timestamp key= comment=创建时间
+  - updated_at timestamp key= comment=更新时间
+
+TABLE t_warehouse rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - station_id varchar(255) key= comment=station id
+  - address_id varchar(255) key= comment=address id
+  - director_id varchar(255) key= comment=director id
+  - comm_id varchar(255) key= comment=comm id
+  - brief text key= comment=brief
+  - status tinyint(1) key= comment=status
+  - input_tmp_area varchar(255) key= comment=入库暂存区
+  - output_tmp_area varchar(255) key= comment=出库暂存区
+  - operate_type varchar(255) key= comment=仓库类型
+  - authorize_id varchar(255) key= comment=授权通道
+
+TABLE t_webhook rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - usage varchar(255) key= comment=usage
+  - name varchar(255) key= comment=name
+  - brief text key= comment=brief
+  - webhook text key= comment=web hook url
+  - region varchar(255) key= comment=region
+  - station varchar(255) key= comment=station
+  - language varchar(255) key= comment=language
+  - user_id varchar(255) key= comment=user id *
+  - user_type varchar(255) key= comment=user type *
+  - secret varchar(255) key= comment=secret
+  - created_at int(11) key= comment=create time
+  - status tinyint(1) key= comment=status
+  - content_type text key= comment=context type
+
+TABLE t_widget_associated_role rows~45 comment=
+  - id int(11) unsigned key=PRI comment=
+  - widget_id int(11) key= comment=widget id
+  - role_id int(11) key= comment=role id
+  - state tinyint(1) key=MUL comment=state
+
+TABLE t_wms_allocation rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - sort tinyint(4) key= comment=the sort pickup
+  - barcode varchar(255) key= comment=barcode
+  - shelves_id varchar(255) key= comment=shelves id
+  - brief text key= comment=brief
+  - status tinyint(1) key= comment=status
+
+TABLE t_wms_barcode_transfer rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - barcode varchar(255) key= comment=barcode
+  - warehouse_id varchar(255) key= comment=warehouse_id
+  - variant_id varchar(255) key= comment=variant id
+  - status tinyint(1) key= comment=status
+
+TABLE t_wms_tray rows~7 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - sort tinyint(4) key= comment=the sort pickup
+  - barcode varchar(255) key= comment=barcode
+  - allocation_id varchar(255) key= comment=allocation id
+  - brief text key= comment=brief
+  - status tinyint(1) key= comment=status
+  - length decimal(10,3) key= comment=length
+  - width decimal(10,3) key= comment=width
+  - height decimal(10,3) key= comment=height
+  - weight decimal(10,3) key= comment=weight
+  - weight_unit varchar(10) key= comment=weight unit
+  - length_unit varchar(10) key= comment=length unit
+
+TABLE t_workflow_hook rows~0 comment=工作流钩子配置表
+  - id int(11) unsigned key=PRI comment=
+  - flow_id int(11) key=MUL comment=流程ID
+  - node_id int(11) key=MUL comment=节点ID (NULL=全局钩子)
+  - hook_name varchar(50) key=MUL comment=钩子时机: before_start/after_node/...
+  - handler_class varchar(255) key= comment=处理器类名
+  - config text key= comment=JSON配置
+  - sort int(11) key= comment=排序
+  - state tinyint(1) key= comment=1启用 0禁用
+  - create_time int(11) key= comment=创建时间
+  - update_time int(11) key= comment=更新时间
+
+TABLE t_work_ledger rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - name varchar(255) key= comment=name
+  - unit varchar(255) key= comment=the unit of the ledger
+  - state tinyint(1) key= comment=state
+  - regions varchar(255) key= comment=name
+  - org varchar(255) key= comment=the unit of the ledger
+  - brief text key= comment=name
+
+TABLE t_work_order rows~200 comment=
+  - id int(11) unsigned key=PRI comment=
+  - subject varchar(255) key= comment=
+  - catalog_id varchar(255) key= comment=ass catalog id
+  - content text key= comment=
+  - attachments text key= comment=
+  - urgency int(11) key= comment=
+  - progress int(11) key= comment=
+  - submitter_id varchar(255) key= comment=staff id *
+  - communication_info text key= comment=common account
+  - communication_type text key= comment=common account
+  - participant varchar(255) key= comment=participant
+  - relation text key= comment=relation reply staff id *
+  - has_notified int(1) key= comment=has notified
+  - create_time datetime key= comment=
+
+TABLE t_work_order_flow rows~2 comment=
+  - id int(11) unsigned key=PRI comment=
+  - work_order_id varchar(255) key= comment= *
+  - submitter_id varchar(255) key= comment=
+  - content text key= comment=
+  - attachments text key= comment=
+  - read int(1) key= comment=has read
+  - create_time datetime key= comment=
+
+TABLE t_work_report rows~4 comment=
+  - id int(11) unsigned key=PRI comment=
+  - subject varchar(255) key= comment=subject
+  - content text key= comment=content
+  - tags varchar(255) key= comment=tags
+  - auditor varchar(255) key= comment=auditor
+  - submitter_id varchar(255) key= comment=the id of the submitter
+  - created_at datetime key= comment=created datetime
+
+TABLE t_work_report_commit rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - created_at datetime key= comment=created datetime
+  - comment text key= comment=the comment of the work report
+  - report_id varchar(255) key= comment=the referer work report
+  - submitter_id varchar(255) key= comment=the staff id of the submitter *
+
+TABLE t_work_report_fee_record rows~0 comment=
+  - id int(11) unsigned key=PRI comment=
+  - income int(11) key= comment=if the fee is income
+  - subject varchar(255) key= comment=subject
+  - amount decimal(10,2) key= comment=the amount *
+  - state tinyint(1) key= comment=the state of the fee
+  - ref varchar(255) key= comment=the referer of the work report
+  - created_at datetime key= comment=created datetime
+  - figure varchar(255) key= comment=the figure use for bind the report to the report
+  - proof text key= comment=the proof of the record
+  - staff_id varchar(255) key= comment=the staff id *
+  - ledger_id varchar(255) key= comment=the pedger id
+  - transform int(11) key= comment=the transform amount *
+
+LIKELY BUSINESS TABLES:
+ - t_accounting_account
+ - t_address
+ - t_adv_result
+ - t_after_sale_inbound
+ - t_after_sale_quality_inspect
+ - t_after_sale_request
+ - t_after_sale_request_item
+ - t_authorize
+ - t_billing
+ - t_billing_lines
+ - t_communication_channel
+ - t_container
+ - t_container_sku_include_standard
+ - t_data_export_file_record
+ - t_data_import_conversion
+ - t_data_import_file_record
+ - t_data_import_record_row
+ - t_developer
+ - t_identity_switching_permission
+ - t_import_record
+ - t_inventory
+ - t_inventory_cost_log
+ - t_inventory_cost_summary
+ - t_inventory_migrate_task
+ - t_inventory_migrate_task_item
+ - t_inventory_migrate_task_parcel
+ - t_inventory_migrate_task_parcel_item
+ - t_item
+ - t_item_accessory
+ - t_item_container_standard
+ - t_item_pickup_record
+ - t_item_purchase_price_snap
+ - t_marketing_event
+ - t_micro_service
+ - t_navigation_link
+ - t_offline_shipping
+ - t_offline_shipping_detail
+ - t_offline_shipping_task
+ - t_oplog
+ - t_order
+ - t_order_amount
+ - t_order_freeze_inventory_mapping
+ - t_order_item
+ - t_order_item_args
+ - t_order_packages
+ - t_order_sales_profit
+ - t_order_tax
+ - t_over_sold_mapping
+ - t_pickup_task
+ - t_pkg_item
+ - t_pkg_verify_code
+ - t_plan_task_record
+ - t_price_adjust_history
+ - t_price_tracking_configure
+ - t_product_min_order_quantity
+ - t_product_record_map
+ - t_product_tiered_pricing
+ - t_profile
+ - t_purchase
+ - t_purchase_item
+ - t_purchase_item_related_order_item_mapping
+ - t_purchase_pecking_item
+ - t_purchase_receipt_record
+ - t_purchase_sku_transfer
+ - t_report_object_group
+ - t_salesperson_permit
+ - t_settlement
+ - t_shipper
+ - t_sites
+ - t_sku_hscode_mapping
+ - t_sku_transfer_mapping
+ - t_special_price_rule
+ - t_storeroom
+ - t_tiered_price
+ - t_tools_box
+ - t_tpflow_comment
+ - t_tpflow_node
+ - t_tpflow_trace
+ - t_variants
+ - t_verification_code
+ - t_wallet_transaction
+ - t_warehouse
+ - t_webhook
+ - t_wms_barcode_transfer
+ - t_work_order
+ - t_work_order_flow
+ - t_work_report_commit
+ - t_work_report_fee_record

@@ -4,28 +4,64 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/alaikis/opentether/internal/config"
+	"github.com/alaikis/opentether/internal/database"
 	"github.com/alaikis/opentether/internal/embedding"
 	"github.com/alaikis/opentether/internal/llm"
 	"github.com/alaikis/opentether/internal/models"
+	"github.com/alaikis/opentether/internal/storage"
+	"github.com/alaikis/opentether/internal/templating"
 	"github.com/alaikis/opentether/internal/text2sql"
 	"github.com/alaikis/opentether/internal/vectorstore"
 	"gorm.io/gorm"
 )
 
 type AgentEngine struct {
-	db         *gorm.DB
-	config     *config.Config
-	skills     *SkillManager
-	providers  *ProviderManager
-	memory     *MemoryManager
-	experience *ExperienceManager
-	env        *EnvManager
-	scripts    *ScriptManager
+	db             *gorm.DB
+	config         *config.Config
+	skills         *SkillManager
+	providers      *ProviderManager
+	memory         *MemoryManager
+	longTermMemory *LongTermMemory
+	experience     *ExperienceManager
+	env            *EnvManager
+	scripts        *ScriptManager
+	store          storage.Driver
+	sqlAuditor     text2sql.AuditRecorder
+	externalDBPool *database.ExternalDBPoolManager
+	mcpProvider    MCPToolProvider
+	fastClassifier *FastPathClassifier
+}
+
+// MCPToolProvider exposes running MCP tools to the Agent without importing the service package.
+type MCPToolProvider interface {
+	ListAvailableTools() []MCPRuntimeTool
+	CallTool(serverID, toolName string, arguments map[string]interface{}) (json.RawMessage, error)
+}
+
+type MCPRuntimeTool struct {
+	ServerID    string
+	ServerName  string
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+// SetSQLAuditor 设置 SQL 审计器
+func (e *AgentEngine) SetSQLAuditor(auditor text2sql.AuditRecorder) {
+	e.sqlAuditor = auditor
+}
+
+// SetMCPProvider 设置 MCP 工具提供器。
+func (e *AgentEngine) SetMCPProvider(provider MCPToolProvider) {
+	e.mcpProvider = provider
 }
 
 type ChatRequest struct {
@@ -43,11 +79,28 @@ type ChatResponse struct {
 	TokensUsed     int                    `json:"tokens_used,omitempty"`
 }
 
+func (r *ChatResponse) SkillUsedToRoute() string {
+	if r == nil {
+		return "agent_loop"
+	}
+	switch r.SkillUsed {
+	case "fast_local":
+		return "fast_local"
+	case "fast_chat":
+		return "fast_chat"
+	case "fast_text2sql_template", "fast_text2sql_approved_template":
+		return "fast_text2sql"
+	default:
+		return "agent_loop"
+	}
+}
+
 type IntentResult struct {
 	Intent     string                 `json:"intent"`
 	Confidence float64                `json:"confidence"`
 	Entities   map[string]string      `json:"entities"`
 	Parameters map[string]interface{} `json:"parameters"`
+	Candidates []SkillCandidate       `json:"candidates,omitempty"`
 }
 
 type PlanningResult struct {
@@ -64,17 +117,98 @@ type PlanStep struct {
 	DependsOn  []string               `json:"depends_on,omitempty"`
 }
 
-func NewAgentEngine(db *gorm.DB, cfg *config.Config) *AgentEngine {
-	return &AgentEngine{
-		db:         db,
-		config:     cfg,
-		skills:     NewSkillManager(db),
-		providers:  NewProviderManager(db),
-		memory:     NewMemoryManager(db),
-		experience: NewExperienceManager(db),
-		env:        NewEnvManager(),
-		scripts:    NewScriptManager(db),
+func NewAgentEngine(db *gorm.DB, cfg *config.Config, store storage.Driver) *AgentEngine {
+	return NewAgentEngineWithExternalDBPool(db, cfg, store, database.NewExternalDBPoolManager(db, nil))
+}
+
+func NewAgentEngineWithExternalDBPool(db *gorm.DB, cfg *config.Config, store storage.Driver, externalDBPool *database.ExternalDBPoolManager) *AgentEngine {
+	if externalDBPool == nil {
+		externalDBPool = database.NewExternalDBPoolManager(db, nil)
 	}
+	return &AgentEngine{
+		db:             db,
+		config:         cfg,
+		skills:         NewSkillManager(db),
+		providers:      NewProviderManager(db),
+		memory:         NewMemoryManager(db),
+		experience:     NewExperienceManager(db),
+		env:            NewEnvManager(),
+		scripts:        NewScriptManager(db),
+		store:          store,
+		externalDBPool: externalDBPool,
+		fastClassifier: NewFastPathClassifier(db),
+	}
+}
+
+// Close closes resources owned by the engine, including cached external datasource pools.
+func (e *AgentEngine) Close() error {
+	if e == nil || e.externalDBPool == nil {
+		return nil
+	}
+	return e.externalDBPool.CloseAll()
+}
+
+// UpdateConversationMemory updates compressed conversation state and task working memory after a turn.
+func (e *AgentEngine) UpdateConversationMemory(user *UserContext, conversationID, userQuery, assistantReply string) error {
+	if e == nil || e.memory == nil {
+		return nil
+	}
+	err := e.memory.UpdateConversationMemoryWithSummary(user, conversationID, userQuery, assistantReply, "")
+	if err == nil {
+		go e.compactConversationSummaryAsync(user, conversationID)
+	}
+	return err
+}
+
+func (e *AgentEngine) compactConversationSummaryAsync(user *UserContext, conversationID string) {
+	compressed := e.compressConversationSummaryWithLLM(user, conversationID)
+	if compressed == "" || e == nil || e.memory == nil || e.memory.db == nil {
+		return
+	}
+	_ = e.memory.db.Model(&models.ConversationState{}).
+		Where("conversation_id = ? AND user_id = ?", conversationID, user.UserID).
+		Update("summary", compressed).Error
+}
+
+func (e *AgentEngine) compressConversationSummaryWithLLM(user *UserContext, conversationID string) string {
+	if e == nil || e.memory == nil || e.providers == nil || user == nil || conversationID == "" {
+		return ""
+	}
+	state, err := e.memory.getConversationWorkingState(user.UserID, conversationID)
+	if err != nil {
+		return ""
+	}
+	if len([]rune(state.Summary)) < 700 {
+		return ""
+	}
+
+	provider, err := e.providers.GetActiveProvider()
+	if err != nil || provider == nil {
+		return ""
+	}
+	client, err := llm.NewClient(provider)
+	if err != nil {
+		return ""
+	}
+
+	prompt := templating.SafeRender(conversationSummaryCompressJinja, map[string]interface{}{"summary": state.Summary}, fmt.Sprintf("请压缩以下对话摘要到 500 字以内：\n%s", state.Summary))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
+		Model:       provider.Model,
+		Messages:    []llm.Message{{Role: "user", Content: prompt}},
+		MaxTokens:   500,
+		Temperature: 0.1,
+	})
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(resp.Content)
+}
+
+func (e *AgentEngine) LearnRouteExampleCandidate(text, route, intent string, confidence float64) {
+	e.learnRouteExampleCandidate(text, route, intent, confidence)
 }
 
 // ProcessUserMessage 处理用户消息的主入口
@@ -89,6 +223,28 @@ func (e *AgentEngine) ProcessUserMessage(req *ChatRequest) (*ChatResponse, error
 	intent, err := e.recognizeIntent(req.Message, user)
 	if err != nil {
 		return nil, fmt.Errorf("意图识别失败: %w", err)
+	}
+
+	// 注入命中的 Skill 配置（用户自定义 Skill 的 MD/数据源/关系等）
+	if user.Context == nil {
+		user.Context = make(map[string]interface{})
+	}
+	if skillID, ok := intent.Parameters["skill_id"].(string); ok && skillID != "" {
+		var skill models.Skill
+		if e.db.Where("id = ?", skillID).First(&skill).Error == nil {
+			user.Context["selected_skill_id"] = skill.ID
+			user.Context["selected_skill_name"] = skill.Name
+			user.Context["selected_skill_type"] = skill.SkillType
+			user.Context["selected_skill_config"] = skill.Config
+			if skill.Config != "" {
+				var cfg map[string]interface{}
+				if json.Unmarshal([]byte(skill.Config), &cfg) == nil {
+					if dsID, ok := cfg["data_source_id"].(string); ok && dsID != "" {
+						user.Context["data_source_id"] = dsID
+					}
+				}
+			}
+		}
 	}
 
 	// 3. 规划执行步骤
@@ -120,7 +276,7 @@ func (e *AgentEngine) ProcessUserMessage(req *ChatRequest) (*ChatResponse, error
 // getUserContext 获取用户上下文信息
 func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 	var user models.User
-	if err := e.db.Preload("Groups").First(&user, userID).Error; err != nil {
+	if err := e.db.Where("id = ?", userID).Preload("Groups").First(&user).Error; err != nil {
 		return nil, err
 	}
 
@@ -129,6 +285,7 @@ func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 		GlobalUserID: user.GlobalUserID,
 		Name:         user.Name,
 		Department:   user.Department,
+		Role:         user.Role,
 		Status:       user.Status,
 	}
 
@@ -144,7 +301,7 @@ func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 
 	// 获取用户可用的 Skills
 	var skillAccess []models.SkillAccess
-	e.db.Where("user_id = ?", userID).Or("group_id IN (?)", ctx.getGroupIDs()).Find(&skillAccess)
+	e.db.Where("user_id = ?", userID).Or("group_id IN ?", ctx.getGroupIDs()).Find(&skillAccess)
 	for _, s := range skillAccess {
 		ctx.AvailableSkills = append(ctx.AvailableSkills, s.SkillID)
 	}
@@ -152,75 +309,179 @@ func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 	return ctx, nil
 }
 
-// recognizeIntent 意图识别：向量语义匹配优先 → 关键词匹配兜底
+// recognizeIntent 意图识别：关键词匹配优先 → 向量语义匹配兜底
 // 不做开放式 fallback，无匹配时返回 boundary_reject
 func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*IntentResult, error) {
 	lowerMsg := toLower(message)
 
-	// === 第一层：向量语义匹配（置信度阈值 0.15）===
-	vectorSkill, score, err := e.skills.MatchByVector(message, 0.15)
-	if err == nil && vectorSkill != nil && score > 0 {
-		return &IntentResult{
-			Intent:     vectorSkill.SkillType,
-			Confidence: score,
-			Entities:   extractEntities(message),
-			Parameters: map[string]interface{}{
-				"skill_name": vectorSkill.Name,
-				"skill_id":   vectorSkill.ID,
-				"match_type": "vector",
-				"score":      score,
-			},
-		}, nil
-	}
-
-	// === 第二层：关键词匹配兜底 ===
 	skills, err := e.skills.ListEnabledSkills()
 	if err != nil {
 		return nil, fmt.Errorf("获取 Skill 列表失败: %w", err)
 	}
 
-	for _, skill := range skills {
-		keywords := parseKeywords(skill.Keywords)
-		keywords = append(keywords, toLower(skill.Name), toLower(skill.SkillType))
+	// === 两阶段路由 ===
+	// Stage 1: 对所有 Skill 打分
+	candidates := scoreSkills(message, lowerMsg, skills)
 
-		for _, kw := range keywords {
-			if kw != "" && contains(lowerMsg, toLower(kw)) {
-				return &IntentResult{
-					Intent:     skill.SkillType,
-					Confidence: 0.7,
-					Entities:   extractEntities(message),
-					Parameters: map[string]interface{}{
-						"skill_name": skill.Name,
-						"skill_id":   skill.ID,
-						"match_type": "keyword",
-					},
-				}, nil
-			}
-		}
+	// 无任何匹配
+	if len(candidates) == 0 {
+		return &IntentResult{
+			Intent:     "boundary_reject",
+			Confidence: 0,
+		}, nil
 	}
 
-	// 无匹配 → 边界拒绝
+	// 最佳候选
+	best := candidates[0]
+
+	// 高置信：直接路由
+	if best.Score >= 0.7 {
+		return &IntentResult{
+			Intent:     best.SkillType,
+			Confidence: best.Score,
+			Parameters: map[string]interface{}{"skill_name": best.SkillName, "skill_id": best.SkillID, "match_type": best.MatchType},
+		}, nil
+	}
+
+	// 中置信 + 与第二名差距大：自动路由
+	if best.Score >= 0.4 && (len(candidates) < 2 || best.Score-candidates[1].Score > 0.25) {
+		return &IntentResult{
+			Intent:     best.SkillType,
+			Confidence: best.Score,
+			Parameters: map[string]interface{}{"skill_name": best.SkillName, "skill_id": best.SkillID, "match_type": best.MatchType},
+		}, nil
+	}
+
+	// 低置信或接近：返回候选列表
 	return &IntentResult{
-		Intent:     "boundary_reject",
-		Confidence: 0,
-		Entities:   map[string]string{},
-		Parameters: map[string]interface{}{
-			"reason":       "no_matching_skill",
-			"user_message": message,
-		},
+		Intent:     "needs_disambiguation",
+		Confidence: best.Score,
+		Candidates: candidates,
+		Parameters: map[string]interface{}{"reason": "ambiguous_query"},
 	}, nil
 }
 
 // parseKeywords 解析 Skill 的关键词 JSON 数组
+// 处理多层嵌套的 JSON 转义（前端多次保存导致的累积错误）
 func parseKeywords(keywordsJSON string) []string {
 	if keywordsJSON == "" {
 		return nil
 	}
-	var keywords []string
-	if err := json.Unmarshal([]byte(keywordsJSON), &keywords); err != nil {
-		return strings.Split(keywordsJSON, ",")
+
+	// 递归展开被多次 JSON.stringify 嵌套的值
+	current := strings.TrimSpace(keywordsJSON)
+	for depth := 0; depth < 10; depth++ {
+		// 尝试直接解析为 []string
+		var keywords []string
+		if err := json.Unmarshal([]byte(current), &keywords); err == nil {
+			// 检查元素是否仍包含可解析的 JSON 字符串（需要进一步展开）
+			result := make([]string, 0, len(keywords))
+			hasNested := false
+			for _, k := range keywords {
+				// 尝试将元素作为 JSON 字符串解析（检查是否有额外引号）
+				var inner string
+				if json.Unmarshal([]byte(k), &inner) == nil && inner != k {
+					// 元素是嵌套的 JSON 字符串，展开后收集
+					hasNested = true
+					subResult := parseKeywords(inner)
+					result = append(result, subResult...)
+				} else {
+					// 去除可能的残留外层引号
+					cleaned := strings.Trim(k, `"`)
+					if cleaned != "" {
+						result = append(result, cleaned)
+					}
+				}
+			}
+			if !hasNested {
+				return result
+			}
+			// 有嵌套，用展开后的结果继续
+			if len(result) > 0 {
+				return result
+			}
+			return keywords
+		}
+
+		// 尝试作为单个 JSON 字符串解析（整个值被额外引号包裹）
+		var inner string
+		if err := json.Unmarshal([]byte(current), &inner); err == nil {
+			current = inner
+			continue
+		}
+		break
 	}
-	return keywords
+
+	// 兜底：逗号分隔
+	return strings.Split(current, ",")
+}
+
+// SkillCandidate 技能候选（两阶段路由用）
+type SkillCandidate struct {
+	SkillID     string  `json:"skill_id"`
+	SkillName   string  `json:"skill_name"`
+	SkillType   string  `json:"skill_type"`
+	Score       float64 `json:"score"`
+	MatchType   string  `json:"match_type"`
+	Description string  `json:"description"`
+}
+
+// scoreSkills 对所有启用的 Skill 匹配打分，返回按分数降序的候选列表
+func scoreSkills(message, lowerMsg string, skills []models.Skill) []SkillCandidate {
+	type resultItem struct {
+		SkillCandidate
+	}
+	var list []resultItem
+
+	for _, sk := range skills {
+		keywords := parseKeywords(sk.Keywords)
+		score := 0.0
+		matchType := ""
+		totalKW := len(keywords)
+
+		// 关键词完全匹配（query contains keyword）: +1.0 each
+		for _, kw := range keywords {
+			if kw != "" && contains(lowerMsg, toLower(kw)) {
+				score += 1.0
+				matchType = "keyword"
+			}
+		}
+
+		// Skill 名称匹配: +0.8
+		if contains(lowerMsg, toLower(sk.Name)) {
+			score += 0.8
+			matchType = "keyword"
+		}
+
+		// Skill 类型匹配: +0.6
+		if contains(lowerMsg, toLower(sk.SkillType)) {
+			score += 0.6
+			matchType = "keyword"
+		}
+
+		// 归一化：总数 / (总关键词数 + 2)，上限 1.0
+		if score > 0 {
+			normalized := score / float64(totalKW+2)
+			if normalized > 1.0 {
+				normalized = 1.0
+			}
+			list = append(list, resultItem{SkillCandidate: SkillCandidate{
+				SkillID: sk.ID, SkillName: sk.Name, SkillType: sk.SkillType,
+				Score: normalized, MatchType: matchType,
+				Description: sk.Description,
+			}})
+		}
+	}
+
+	// 按分数降序
+	sort.Slice(list, func(i, j int) bool { return list[i].Score > list[j].Score })
+
+	// 最多返回 3 个候选
+	result := make([]SkillCandidate, 0, min(3, len(list)))
+	for i := 0; i < len(list) && i < 3; i++ {
+		result = append(result, list[i].SkillCandidate)
+	}
+	return result
 }
 
 // planExecution 规划执行
@@ -244,6 +505,9 @@ func (e *AgentEngine) planExecution(intent *IntentResult, user *UserContext) (*P
 		"employee":     "skill_employee",
 		"pdf":          "skill_pdf",
 		"md2pdf":       "skill_md2pdf",
+		"excel":        "skill_report",
+		"word":         "skill_report",
+		"ppt":          "skill_report",
 	}
 
 	skillName := skillMap[intent.Intent]
@@ -289,6 +553,11 @@ func (e *AgentEngine) checkPermission(user *UserContext, skillName string) (bool
 	// 检查用户是否激活
 	if user.Status != "active" {
 		return false, "用户账户未激活"
+	}
+
+	// 管理员角色直接放行
+	if user.Role == "admin" {
+		return true, ""
 	}
 
 	// 检查 Skill 是否在允许列表中
@@ -429,23 +698,50 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 		}, nil
 	}
 
-	// 创建 Text2SQL 实例
-	t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	externalDB, err := e.externalDBPool.Get(context.Background(), dataSourceID)
 	if err != nil {
 		return &ChatResponse{
-			Message: fmt.Sprintf("连接数据源失败: %v", err),
+			Message: "数据库暂时不可用，请稍后重试或联系管理员检查数据源配置",
 			Data: map[string]interface{}{
 				"type":  "text2sql",
-				"error": err.Error(),
+				"error": "datasource_unavailable",
 			},
 		}, nil
 	}
-	defer t2s.Close()
+	t2s := text2sql.NewWithExternalDB(e.db, client, dataSourceID, externalDB)
 
+	// 注入 SQL 审计服务
+	if e.sqlAuditor != nil {
+		t2s.SetAuditService(e.sqlAuditor)
+	}
+
+	// 确定是否为管理员
+	isAdmin := user.Role == "admin"
+
+	// 获取选中的 Skill ID
+	skillID := ""
+	if user.Context != nil {
+		if sid, ok := user.Context["selected_skill_id"].(string); ok {
+			skillID = sid
+		}
+	}
+
+	schemaContext := buildText2SQLSkillSchemaContext(user)
+	if runtimeContext := e.buildText2SQLRuntimeContext(skillID, dataSourceID); runtimeContext != "" {
+		schemaContext += runtimeContext
+	}
+
+	boundaryRules := parseDataBoundaryRulesFromUserContext(user)
 	// 执行查询
 	req := &text2sql.QueryRequest{
-		Question:     message,
-		DataSourceID: dataSourceID,
+		Question:          message,
+		DataSourceID:      dataSourceID,
+		SchemaContext:     schemaContext,
+		UserID:            user.UserID,
+		SkillID:           skillID,
+		IsAdmin:           isAdmin,
+		DataBoundaryRules: boundaryRules,
+		UserContext:       buildBoundaryUserContext(user),
 	}
 
 	result, err := t2s.ExecuteSQL(context.Background(), req)
@@ -466,6 +762,8 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 			},
 		}, nil
 	}
+
+	go e.learnText2SQLRuntime(skillID, dataSourceID, message, result.SQL, result.Columns, result.RowCount)
 
 	// 格式化结果
 	responseMessage := formatQueryResult(result)
@@ -544,8 +842,8 @@ func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatR
 		}, nil
 	}
 
-	// 创建 Text2SQL 实例
-	t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	// 从共享连接池获取外部数据源连接，避免每次请求重复创建数据库连接池
+	externalDB, err := e.externalDBPool.Get(context.Background(), dataSourceID)
 	if err != nil {
 		return &ChatResponse{
 			Message: fmt.Sprintf("连接数据源失败: %v", err),
@@ -555,12 +853,37 @@ func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatR
 			},
 		}, nil
 	}
-	defer t2s.Close()
+	t2s := text2sql.NewWithExternalDB(e.db, client, dataSourceID, externalDB)
+
+	// 注入 SQL 审计服务
+	if e.sqlAuditor != nil {
+		t2s.SetAuditService(e.sqlAuditor)
+	}
+
+	// 确定是否为管理员
+	isAdmin := user.Role == "admin"
+
+	// 获取选中的 Skill ID
+	skillID := ""
+	if user.Context != nil {
+		if sid, ok := user.Context["selected_skill_id"].(string); ok {
+			skillID = sid
+		}
+	}
+
+	schemaContext := buildText2SQLSkillSchemaContext(user)
+	if runtimeContext := e.buildText2SQLRuntimeContext(skillID, dataSourceID); runtimeContext != "" {
+		schemaContext += runtimeContext
+	}
 
 	// 为员工查询构建特殊的 prompt
 	req := &text2sql.QueryRequest{
-		Question:     message,
-		DataSourceID: dataSourceID,
+		Question:      message,
+		DataSourceID:  dataSourceID,
+		SchemaContext: schemaContext,
+		UserID:        user.UserID,
+		SkillID:       skillID,
+		IsAdmin:       isAdmin,
 	}
 
 	result, err := t2s.ExecuteSQL(context.Background(), req)
@@ -581,6 +904,8 @@ func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatR
 			},
 		}, nil
 	}
+
+	go e.learnText2SQLRuntime(skillID, dataSourceID, message, result.SQL, result.Columns, result.RowCount)
 
 	// 格式化结果，优先显示员工相关的列
 	responseMessage := formatEmployeeResult(result)
@@ -631,7 +956,145 @@ func formatQueryResult(result *text2sql.QueryResult) string {
 	return output
 }
 
+func parseDataBoundaryRulesFromUserContext(user *UserContext) []text2sql.DataBoundaryRule {
+	if user == nil || user.Context == nil {
+		return nil
+	}
+	raw, _ := user.Context["selected_skill_config"].(string)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var cfg struct {
+		Rules []text2sql.DataBoundaryRule `json:"data_boundary_rules"`
+	}
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return nil
+	}
+	return cfg.Rules
+}
+
+func buildBoundaryUserContext(user *UserContext) map[string]interface{} {
+	ctx := map[string]interface{}{}
+	if user == nil {
+		return ctx
+	}
+	ctx["user_id"] = user.UserID
+	ctx["global_user_id"] = user.GlobalUserID
+	ctx["company_user_id"] = user.GlobalUserID
+	ctx["name"] = user.Name
+	ctx["department"] = user.Department
+	ctx["role"] = user.Role
+	var groupIDs, groupNames, groupCodes []string
+	for _, g := range user.Groups {
+		groupIDs = append(groupIDs, g.ID)
+		groupNames = append(groupNames, g.Name)
+		groupCodes = append(groupCodes, g.Code)
+	}
+	ctx["group_ids"] = groupIDs
+	ctx["group_names"] = groupNames
+	ctx["group_codes"] = groupCodes
+	return ctx
+}
+
 // formatEmployeeResult 格式化员工查询结果
+func buildText2SQLSkillSchemaContext(user *UserContext) string {
+	if user == nil || user.Context == nil {
+		return ""
+	}
+	raw, _ := user.Context["selected_skill_config"].(string)
+	if raw == "" {
+		return ""
+	}
+	var cfg map[string]interface{}
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return ""
+	}
+
+	if contextMD, ok := cfg["context_md"].(string); ok && strings.TrimSpace(contextMD) != "" {
+		return contextMD
+	}
+	if contextURL, ok := cfg["context_md_url"].(string); ok && strings.TrimSpace(contextURL) != "" {
+		if md := fetchSkillContextMD(contextURL); md != "" {
+			return md
+		}
+	}
+
+	var sb strings.Builder
+	if entryTable, ok := cfg["entry_table"].(string); ok && strings.TrimSpace(entryTable) != "" {
+		sb.WriteString("Text2SQL 入口表（主事实表，生成 SQL 时优先从此表开始）：\n")
+		sb.WriteString("表: " + entryTable + "\n\n")
+	}
+	if metrics, ok := cfg["metric_rules"].([]interface{}); ok && len(metrics) > 0 {
+		sb.WriteString("Text2SQL 指标规则：\n")
+		for _, item := range metrics {
+			if b, err := json.Marshal(item); err == nil {
+				sb.WriteString("  - " + string(b) + "\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+	if entities, ok := cfg["entity_rules"].([]interface{}); ok && len(entities) > 0 {
+		sb.WriteString("Text2SQL 实体规则：\n")
+		for _, item := range entities {
+			if b, err := json.Marshal(item); err == nil {
+				sb.WriteString("  - " + string(b) + "\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+	if selected, ok := cfg["selected_tables"].([]interface{}); ok && len(selected) > 0 {
+		sb.WriteString("Text2SQL Skill 设计期候选表（运行时优先使用）：\n")
+		for _, item := range selected {
+			switch table := item.(type) {
+			case string:
+				sb.WriteString("表: " + table + "\n")
+			case map[string]interface{}:
+				name, _ := table["name"].(string)
+				if name == "" {
+					continue
+				}
+				sb.WriteString("表: " + name + "\n")
+				if cols, ok := table["columns"].([]interface{}); ok {
+					for _, col := range cols {
+						sb.WriteString(fmt.Sprintf("  - %v\n", col))
+					}
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+	if relations, ok := cfg["table_relations"].([]interface{}); ok && len(relations) > 0 {
+		sb.WriteString("设计期确认的表关系：\n")
+		for _, item := range relations {
+			if rel, ok := item.(map[string]interface{}); ok {
+				sb.WriteString(fmt.Sprintf("  %v.%v → %v.%v\n", rel["from_table"], rel["from_column"], rel["to_table"], rel["to_column"]))
+			}
+		}
+		sb.WriteString("\n")
+	}
+	if rules, ok := cfg["business_rules"].(string); ok && strings.TrimSpace(rules) != "" {
+		sb.WriteString("业务口径：\n" + rules + "\n")
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+func fetchSkillContextMD(url string) string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 func formatEmployeeResult(result *text2sql.QueryResult) string {
 	if result.Error != "" {
 		return result.Error
@@ -771,14 +1234,14 @@ func (e *AgentEngine) executePDFReport(message string, user *UserContext) (*Chat
 		}, nil
 	}
 
-	// 使用 text2sql 获取数据
-	t2s, err := text2sql.NewWithDataSource(e.db, client, dataSourceID)
+	// 使用共享连接池获取数据，避免每次报表生成重复创建数据库连接池
+	externalDB, err := e.externalDBPool.Get(context.Background(), dataSourceID)
 	if err != nil {
 		return &ChatResponse{
 			Message: fmt.Sprintf("连接数据源失败: %v", err),
 		}, nil
 	}
-	defer t2s.Close()
+	t2s := text2sql.NewWithExternalDB(e.db, client, dataSourceID, externalDB)
 
 	// 构建查询 - 尝试从 message 中提取查询意图
 	queryMessage := message
@@ -805,9 +1268,26 @@ func (e *AgentEngine) executePDFReport(message string, user *UserContext) (*Chat
 		}, nil
 	}
 
-	// 生成 PDF (需要使用 PDFService，但这需要单独的实例)
-	// 这里我们返回数据，让用户可以下载为 PDF
-	message = fmt.Sprintf("已查询到 %d 条数据，正在生成 PDF 报表...", result.RowCount)
+	// 生成 PDF (使用 gofpdf)
+	ctx := context.Background()
+	downloadURL, pdfErr := e.generateReportPDF(ctx, message, result.Columns, result.Rows)
+	if pdfErr != nil {
+		return &ChatResponse{
+			Message: fmt.Sprintf("PDF 生成失败: %v", pdfErr),
+			Data: map[string]interface{}{
+				"type":           "pdf",
+				"sql":            result.SQL,
+				"columns":        result.Columns,
+				"rows":           result.Rows,
+				"row_count":      result.RowCount,
+				"data_source_id": dataSourceID,
+				"error":          pdfErr.Error(),
+			},
+			SkillUsed: "skill_pdf",
+		}, nil
+	}
+
+	message = fmt.Sprintf("已查询到 %d 条数据，PDF 报表已生成\n\n[📄 下载 PDF 报表](%s)", result.RowCount, downloadURL)
 
 	return &ChatResponse{
 		Message: message,
@@ -818,8 +1298,7 @@ func (e *AgentEngine) executePDFReport(message string, user *UserContext) (*Chat
 			"rows":           result.Rows,
 			"row_count":      result.RowCount,
 			"data_source_id": dataSourceID,
-			"action":         "generate_pdf",
-			"api_endpoint":   "/api/v1/admin/reports/query-pdf",
+			"download_url":   downloadURL,
 		},
 		SkillUsed: "skill_pdf",
 	}, nil
@@ -882,6 +1361,7 @@ type UserContext struct {
 	GlobalUserID    string
 	Name            string
 	Department      string
+	Role            string
 	Status          string
 	Groups          []GroupContext
 	AvailableSkills []string
@@ -921,7 +1401,7 @@ func contains(s, substr string) bool {
 	if len(s) < len(substr) {
 		return false
 	}
-	if s == substr {
+	if s[:len(substr)] == substr {
 		return true
 	}
 	return contains(s[1:], substr)
@@ -960,6 +1440,25 @@ func (m *ProviderManager) GetActiveProvider() (*models.Provider, error) {
 	var provider models.Provider
 	err := m.db.Where("enabled = ?", true).Order("priority ASC").First(&provider).Error
 	return &provider, err
+}
+
+func (m *ProviderManager) GetProviderByRole(role string) (*models.Provider, error) {
+	if role == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var providers []models.Provider
+	if err := m.db.Where("enabled = ?", true).Order("priority ASC").Find(&providers).Error; err != nil {
+		return nil, err
+	}
+	for _, provider := range providers {
+		var cfg map[string]interface{}
+		if json.Unmarshal([]byte(provider.Config), &cfg) == nil {
+			if r, ok := cfg["role"].(string); ok && r == role {
+				return &provider, nil
+			}
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 func (m *ProviderManager) CallLLM(ctx context.Context, provider *models.Provider, prompt string) (string, error) {
@@ -1051,7 +1550,9 @@ func (m *SkillManager) GetSkill(name string) (*models.Skill, error) {
 // ListEnabledSkills 获取所有启用的 Skill
 func (m *SkillManager) ListEnabledSkills() ([]models.Skill, error) {
 	var skills []models.Skill
-	err := m.db.Where("enabled = ?", true).Find(&skills).Error
+	err := m.db.Where("enabled = ?", true).
+		Order("CASE WHEN category = '系统内置' THEN 1 ELSE 0 END, created_at DESC").
+		Find(&skills).Error
 	return skills, err
 }
 
@@ -1134,11 +1635,12 @@ func (m *SkillManager) VectorStore() vectorstore.Store {
 
 // MemoryManager 记忆管理
 type MemoryManager struct {
-	db *gorm.DB
+	db       *gorm.DB
+	longTerm *LongTermMemory
 }
 
 func NewMemoryManager(db *gorm.DB) *MemoryManager {
-	return &MemoryManager{db: db}
+	return &MemoryManager{db: db, longTerm: NewLongTermMemory(db)}
 }
 
 func (m *MemoryManager) SaveConversation(userID, convID, userMsg, assistantMsg string) error {
@@ -1195,24 +1697,58 @@ func (m *MemoryManager) GetMessages(userID string, limit int) ([]models.Message,
 }
 
 func (m *MemoryManager) GetUserMemory(userID, memoryType string) (string, error) {
-	// 获取用户的长期记忆
-	// 这里应该有实际的记忆表
-	return "", nil
+	memories, err := m.longTerm.GetUserMemory(userID, memoryType)
+	if err != nil || len(memories) == 0 {
+		return "", err
+	}
+	var sb strings.Builder
+	for _, mem := range memories {
+		sb.WriteString(mem.Key + ": " + mem.Content + "\n")
+	}
+	return sb.String(), nil
 }
 
 func (m *MemoryManager) SaveUserMemory(userID, memoryType, content string) error {
-	// 保存用户的长期记忆
-	return nil
+	key := "user_" + memoryType
+	return m.longTerm.SaveUserMemory(userID, memoryType, key, content, 1)
 }
 
 func (m *MemoryManager) GetGroupMemory(groupID, memoryType string) (string, error) {
-	// 获取用户组的共享记忆
-	return "", nil
+	memories, err := m.longTerm.GetGroupMemories([]string{groupID})
+	if err != nil || len(memories) == 0 {
+		return "", err
+	}
+	var sb strings.Builder
+	for _, mem := range memories {
+		sb.WriteString(mem.Key + ": " + mem.Content + "\n")
+	}
+	return sb.String(), nil
 }
 
 func (m *MemoryManager) SaveGroupMemory(groupID, memoryType, content string) error {
-	// 保存用户组的共享记忆
-	return nil
+	key := "group_" + memoryType
+	return m.longTerm.SaveGroupMemory(groupID, memoryType, key, content, 0)
+}
+
+// SaveConversationMemory 对话结束后自动沉淀记忆
+func (m *MemoryManager) SaveConversationMemory(userID, userQuery, assistantReply string, groupIDs []string) {
+	summary := fmt.Sprintf("Q: %s A: %s", truncateStr(userQuery, 200), truncateStr(assistantReply, 300))
+	m.longTerm.SaveUserMemory(userID, "conversation", fmt.Sprintf("conv_%d", time.Now().Unix()), summary, 0)
+	for _, gid := range groupIDs {
+		topic := extractTopic(userQuery)
+		if topic != "" {
+			m.longTerm.SaveGroupMemory(gid, "topic", topic, userQuery, 5)
+		}
+	}
+}
+
+func extractTopic(query string) string {
+	for _, kw := range []string{"订单", "销售", "库存", "员工", "成本", "客户", "采购", "报表", "产品", "利润", "业绩", "部门", "仓库", "物流", "广告"} {
+		if strings.Contains(query, kw) {
+			return kw
+		}
+	}
+	return ""
 }
 
 var _ = json.Marshal // use json

@@ -18,6 +18,7 @@ import (
 	"github.com/alaikis/opentether/internal/middleware"
 	"github.com/alaikis/opentether/internal/router"
 	"github.com/alaikis/opentether/internal/service"
+	"github.com/alaikis/opentether/internal/storage"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -47,8 +48,30 @@ func main() {
 		log.Printf("Database not configured, skipping migrations. Use /setup to configure.")
 	}
 
+	// Initialize object storage
+	store, err := storage.New(storage.Config{
+		Type: cfg.Storage.Type,
+		Local: storage.LocalConfig{
+			Path:    cfg.Storage.Local.Path,
+			BaseURL: cfg.Storage.Local.BaseURL,
+		},
+		S3: storage.S3ConfigRaw{
+			Endpoint:  cfg.Storage.S3.Endpoint,
+			Region:    cfg.Storage.S3.Region,
+			AccessKey: cfg.Storage.S3.AccessKey,
+			SecretKey: cfg.Storage.S3.SecretKey,
+			Bucket:    cfg.Storage.S3.Bucket,
+			UseSSL:    cfg.Storage.S3.UseSSL,
+			PathStyle: cfg.Storage.S3.PathStyle,
+		},
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize storage: %v", err)
+	}
+	log.Printf("Storage initialized: %s", cfg.Storage.Type)
+
 	// Initialize services
-	services := service.NewServices(db, cfg)
+	services := service.NewServices(db, cfg, store)
 
 	// Initialize handlers
 	handlers := handler.NewHandlers(services, cfg, db)
@@ -76,7 +99,7 @@ func main() {
 	app.Use(middleware.CORS(cfg.Security.CORS))
 
 	// Setup routes (filesystem mode - admin-ui/build must exist on disk)
-	router.Setup(app, handlers, cfg, nil, db, false)
+	router.Setup(app, handlers, cfg, nil, db, false, store)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

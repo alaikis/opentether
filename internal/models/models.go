@@ -25,8 +25,10 @@ const (
 
 type User struct {
 	ID           string     `json:"id" gorm:"type:varchar(36);primaryKey"`
-	GlobalUserID string     `json:"global_user_id" gorm:"type:varchar(100);uniqueIndex;not null"`
-	Name         string     `json:"name" gorm:"type:varchar(255);not null"`
+	CompanyID    string     `json:"company_id" gorm:"type:varchar(100);index"`
+	GlobalUserID       string     `json:"global_user_id" gorm:"type:varchar(100);uniqueIndex;not null"`
+	ExternalEmployeeID string     `json:"external_employee_id" gorm:"type:varchar(100);index"` // 公司/外部系统员工识别号
+	Name               string     `json:"name" gorm:"type:varchar(255);not null"`
 	Email        string     `json:"email" gorm:"type:varchar(255);uniqueIndex"`
 	Department   string     `json:"department" gorm:"type:varchar(100)"`
 	Position     string     `json:"position" gorm:"type:varchar(100)"`
@@ -90,8 +92,10 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 
 type UserGroup struct {
 	ID              string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	CompanyID       string    `json:"company_id" gorm:"type:varchar(100);index"`
 	GroupName       string    `json:"group_name" gorm:"type:varchar(100);not null"`
 	GroupCode       string    `json:"group_code" gorm:"type:varchar(50);uniqueIndex;not null"`
+	ExternalGroupID string    `json:"external_group_id" gorm:"type:varchar(100);index"` // 公司/外部系统用户组识别号
 	Description     string    `json:"description" gorm:"type:text"`
 	DataAccessScope string    `json:"data_access_scope" gorm:"type:varchar(20);default:self"` // all, self, department, custom
 	DataAccessConds string    `json:"data_access_conds" gorm:"type:text"`                     // JSON conditions
@@ -234,9 +238,76 @@ type SkillInvocation struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// SkillRuntimeMemory stores validated runtime learnings for a Skill, especially Text2SQL table/field/relation/query patterns.
+type RouteExample struct {
+	ID         string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Text       string    `json:"text" gorm:"type:text"`
+	Route      string    `json:"route" gorm:"type:varchar(50);index"` // fast_local, fast_chat, fast_text2sql, agent_loop
+	Intent     string    `json:"intent" gorm:"type:varchar(100);index"`
+	Source     string    `json:"source" gorm:"type:varchar(50);index"`                // builtin, runtime, admin, rejected
+	Status     string    `json:"status" gorm:"type:varchar(20);index;default:active"` // active, pending, rejected
+	Confidence float64   `json:"confidence" gorm:"default:0.8"`
+	UseCount   int       `json:"use_count" gorm:"default:1"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (r *RouteExample) BeforeCreate(tx *gorm.DB) error {
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	if r.Source == "" {
+		r.Source = "runtime"
+	}
+	if r.Status == "" {
+		r.Status = "pending"
+	}
+	if r.Confidence == 0 {
+		r.Confidence = 0.7
+	}
+	if r.UseCount == 0 {
+		r.UseCount = 1
+	}
+	return nil
+}
+
+type SkillRuntimeMemory struct {
+	ID           string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	SkillID      string    `json:"skill_id" gorm:"type:varchar(36);index"`
+	DataSourceID string    `json:"data_source_id" gorm:"type:varchar(36);index"`
+	Type         string    `json:"type" gorm:"type:varchar(50);index"` // table_usage, table_relation, metric_rule, sql_pattern
+	Key          string    `json:"key" gorm:"type:varchar(255);index"`
+	Content      string    `json:"content" gorm:"type:text"`
+	Confidence   float64   `json:"confidence" gorm:"default:0.5"`
+	UseCount     int       `json:"use_count" gorm:"default:1"`
+	Source       string    `json:"source" gorm:"type:varchar(50);default:runtime"` // runtime, confirmed, admin
+	LastUsedAt   time.Time `json:"last_used_at" gorm:"index"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 func (s *SkillInvocation) BeforeCreate(tx *gorm.DB) error {
 	if s.ID == "" {
 		s.ID = uuid.New().String()
+	}
+	return nil
+}
+
+func (m *SkillRuntimeMemory) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == "" {
+		m.ID = uuid.New().String()
+	}
+	if m.Confidence == 0 {
+		m.Confidence = 0.5
+	}
+	if m.UseCount == 0 {
+		m.UseCount = 1
+	}
+	if m.Source == "" {
+		m.Source = "runtime"
+	}
+	if m.LastUsedAt.IsZero() {
+		m.LastUsedAt = time.Now()
 	}
 	return nil
 }
@@ -253,6 +324,49 @@ type SkillAccess struct {
 func (s *SkillAccess) BeforeCreate(tx *gorm.DB) error {
 	if s.ID == "" {
 		s.ID = uuid.New().String()
+	}
+	return nil
+}
+
+type SQLAudit struct {
+	ID           string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	UserID       string     `json:"user_id" gorm:"type:varchar(36);index"`
+	SkillID      string     `json:"skill_id" gorm:"type:varchar(36)"`
+	Question     string     `json:"question" gorm:"type:text"`
+	GeneratedSQL string     `json:"generated_sql" gorm:"type:text"`
+	DataSourceID string     `json:"data_source_id" gorm:"type:varchar(36)"`
+	Status       string     `json:"status" gorm:"type:varchar(20);default:pending"` // pending / approved / rejected / executed
+	ApprovedBy   string     `json:"approved_by" gorm:"type:varchar(36)"`
+	ApprovedAt   *time.Time `json:"approved_at"`
+	RejectReason string     `json:"reject_reason" gorm:"type:text"`
+	RowCount     int        `json:"row_count"`
+	ExecTime     string     `json:"exec_time"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (s *SQLAudit) BeforeCreate(tx *gorm.DB) error {
+	if s.ID == "" {
+		s.ID = uuid.New().String()
+	}
+	return nil
+}
+
+type MCPConfig struct {
+	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Name      string    `json:"name" gorm:"type:varchar(100)"`
+	Command   string    `json:"command" gorm:"type:varchar(500)"`
+	Args      string    `json:"args" gorm:"type:text"` // JSON array
+	Env       string    `json:"env" gorm:"type:text"`  // JSON object
+	Enabled   bool      `json:"enabled" gorm:"default:true"`
+	Status    string    `json:"status" gorm:"type:varchar(20)"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (m *MCPConfig) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == "" {
+		m.ID = uuid.New().String()
 	}
 	return nil
 }
@@ -338,9 +452,97 @@ type Message struct {
 	Conversation *Conversation `json:"conversation,omitempty" gorm:"foreignKey:ConversationID"`
 }
 
+// ConversationState stores compressed short-term memory and task working memory for one conversation.
+type ConversationState struct {
+	ID             string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	ConversationID string     `json:"conversation_id" gorm:"type:varchar(36);uniqueIndex;not null"`
+	UserID         string     `json:"user_id" gorm:"type:varchar(36);index"`
+	Status         string     `json:"status" gorm:"type:varchar(20);index;default:active"` // active, warm_idle, archived
+	Summary        string     `json:"summary" gorm:"type:text"`
+	ActiveTaskID   string     `json:"active_task_id" gorm:"type:varchar(100);index"`
+	EntitiesJSON   string     `json:"entities_json" gorm:"type:text"`        // active entity slots, e.g. employee/product/customer
+	TasksJSON      string     `json:"tasks_json" gorm:"type:text"`           // bounded task working memory
+	ArchivePath    string     `json:"archive_path" gorm:"type:varchar(500)"` // optional markdown archive path
+	Version        int        `json:"version" gorm:"default:1"`
+	LastActiveAt   time.Time  `json:"last_active_at" gorm:"index"`
+	ArchivedAt     *time.Time `json:"archived_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+
+	Conversation *Conversation `json:"conversation,omitempty" gorm:"foreignKey:ConversationID"`
+	User         *User         `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
+
 func (m *Message) BeforeCreate(tx *gorm.DB) error {
 	if m.ID == "" {
 		m.ID = uuid.New().String()
+	}
+	return nil
+}
+
+func (s *ConversationState) BeforeCreate(tx *gorm.DB) error {
+	if s.ID == "" {
+		s.ID = uuid.New().String()
+	}
+	if s.Version == 0 {
+		s.Version = 1
+	}
+	if s.Status == "" {
+		s.Status = "active"
+	}
+	if s.LastActiveAt.IsZero() {
+		s.LastActiveAt = time.Now()
+	}
+	return nil
+}
+
+type RuntimeJob struct {
+	ID             string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	UserID         string     `json:"user_id" gorm:"type:varchar(36);index"`
+	ConversationID string     `json:"conversation_id" gorm:"type:varchar(36);index"`
+	SkillID        string     `json:"skill_id" gorm:"type:varchar(36);index"`
+	JobType        string     `json:"job_type" gorm:"type:varchar(50);index"`
+	Status         string     `json:"status" gorm:"type:varchar(20);index"` // pending,running,paused,recovering,succeeded,failed,cancelled
+	Input          string     `json:"input" gorm:"type:text"`
+	Output         string     `json:"output" gorm:"type:text"`
+	Error          string     `json:"error" gorm:"type:text"`
+	CurrentStep    int        `json:"current_step"`
+	MaxSteps       int        `json:"max_steps"`
+	Recoverable    bool       `json:"recoverable" gorm:"default:true"`
+	LeaseOwner     string     `json:"lease_owner" gorm:"type:varchar(100);index"`
+	LeaseExpiresAt time.Time  `json:"lease_expires_at" gorm:"index"`
+	StartedAt      time.Time  `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+type RuntimeCheckpoint struct {
+	ID             string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	JobID          string    `json:"job_id" gorm:"type:varchar(36);index"`
+	Step           int       `json:"step" gorm:"index"`
+	Type           string    `json:"type" gorm:"type:varchar(50);index"`
+	State          string    `json:"state" gorm:"type:text"`
+	IdempotencyKey string    `json:"idempotency_key" gorm:"type:varchar(255);index"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (j *RuntimeJob) BeforeCreate(tx *gorm.DB) error {
+	if j.ID == "" {
+		j.ID = uuid.New().String()
+	}
+	if j.Status == "" {
+		j.Status = "pending"
+	}
+	if j.StartedAt.IsZero() {
+		j.StartedAt = time.Now()
+	}
+	return nil
+}
+
+func (c *RuntimeCheckpoint) BeforeCreate(tx *gorm.DB) error {
+	if c.ID == "" {
+		c.ID = uuid.New().String()
 	}
 	return nil
 }
@@ -581,6 +783,43 @@ func (m *GroupMemory) BeforeCreate(tx *gorm.DB) error {
 		m.ID = GenerateID()
 	}
 	return nil
+}
+
+// UserProfile 用户 Soul/Profile（Letta-inspired Core Memory 人类块）
+type UserProfile struct {
+	ID                 string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	UserID             string    `json:"user_id" gorm:"type:varchar(36);uniqueIndex"`
+	Persona            string    `json:"persona" gorm:"type:text"`          // AI 助手的人格描述
+	Human              string    `json:"human" gorm:"type:text"`            // 用户的人类描述
+	Preferences        string    `json:"preferences" gorm:"type:text"`      // 用户偏好 JSON
+	PreferredSkills    string    `json:"preferred_skills" gorm:"type:text"` // 常用 Skill IDs JSON
+	LanguagePreference string    `json:"language_preference" gorm:"type:varchar(20);default:zh-CN"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+
+	User *User `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
+
+func (p *UserProfile) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == "" {
+		p.ID = GenerateID()
+	}
+	if p.LanguagePreference == "" {
+		p.LanguagePreference = "zh-CN"
+	}
+	return nil
+}
+
+// CompanyProfile 公司级 Soul（Letta-inspired 企业级 Core Memory）
+type CompanyProfile struct {
+	ID            string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Name          string    `json:"name" gorm:"type:varchar(200)"`
+	Persona       string    `json:"persona" gorm:"type:text"`    // 企业的 AI 人格
+	BrandTone     string    `json:"brand_tone" gorm:"type:text"` // 企业语调、合规规则
+	Industry      string    `json:"industry" gorm:"type:varchar(100)"`
+	DefaultConfig string    `json:"default_config" gorm:"type:text"` // JSON
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // AgentScript 智能体脚本

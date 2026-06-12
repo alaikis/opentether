@@ -59,6 +59,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	// LLM 提供商
 	admin.Get("/providers", h.ListProviders)
 	adminAdmin.Post("/providers", h.CreateProvider)
+	adminAdmin.Post("/providers/test", h.TestProviderConnection)
 	adminAdmin.Put("/providers/:id", h.UpdateProvider)
 	adminAdmin.Delete("/providers/:id", h.DeleteProvider)
 	adminAdmin.Post("/providers/:id/test", h.TestProvider)
@@ -66,10 +67,12 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	// 数据源
 	admin.Get("/datasources", h.ListDataSources)
 	adminAdmin.Post("/datasources", h.CreateDataSource)
+	adminAdmin.Post("/datasources/test", h.TestDataSourceConnection)
 	adminAdmin.Put("/datasources/:id", h.UpdateDataSource)
 	adminAdmin.Delete("/datasources/:id", h.DeleteDataSource)
 	adminAdmin.Post("/datasources/:id/test", h.TestDataSource)
 	adminAdmin.Post("/datasources/:id/analyze", h.AnalyzeDataSource)
+	adminAdmin.Put("/datasources/:id/relations", h.UpdateTableRelations)
 
 	// Skills
 	admin.Get("/skills", h.ListSkills)
@@ -78,8 +81,19 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Delete("/skills/:id", h.DeleteSkill)
 	adminAdmin.Post("/skills/:id/test", h.TestSkill)
 	adminAdmin.Post("/skills/:id/sync", h.SyncSkillVector)
+	admin.Get("/skills/route-examples", h.ListRouteExamples)
+	adminAdmin.Post("/skills/route-examples", h.CreateRouteExample)
+	adminAdmin.Post("/skills/route-examples/:id/review", h.ReviewRouteExample)
+	admin.Get("/skills/runtime-memories", h.ListSkillRuntimeMemories)
+	adminAdmin.Post("/skills/runtime-memories/:id/review", h.ReviewSkillRuntimeMemory)
+	adminAdmin.Delete("/skills/runtime-memories/:id", h.DeleteSkillRuntimeMemory)
+	admin.Get("/skills/:id/context-md", h.GetSkillContextMD)
+	adminAdmin.Put("/skills/:id/context-md", h.UpdateSkillContextMD)
 	adminAdmin.Post("/skills/from-markdown", h.UploadMarkdownAndCreateSkill)
 	adminAdmin.Post("/skills/preview", h.ParseMarkdownPreview)
+	adminAdmin.Post("/skills/generate", h.GenerateSkillWithAI)
+	adminAdmin.Post("/skills/ai-generate-relations", h.GenerateText2SQLRelations)
+	adminAdmin.Post("/skills/ai-generate-relations/stream", h.GenerateText2SQLRelationsStream)
 
 	// MCP
 	admin.Get("/mcp/configs", h.ListMCPConfigs)
@@ -114,6 +128,18 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	admin.Get("/im/pairings", h.ListIMPairings)
 	adminAdmin.Delete("/im/pairings/:id", h.UnbindIM)
 
+	// 经验管理
+	admin.Get("/experiences", h.ListExperiences)
+	admin.Get("/experiences/:id", h.GetExperience)
+	adminAdmin.Post("/experiences/:id/review", h.ReviewExperience)
+	adminAdmin.Post("/experiences/:id/promote", h.PromoteExperience)
+	adminAdmin.Delete("/experiences/:id", h.DeleteExperience)
+
+	// SQL 审计
+	admin.Get("/sql-audits", h.ListSQLAudits)
+	adminAdmin.Post("/sql-audits/:id/approve", h.ApproveSQLAudit)
+	adminAdmin.Post("/sql-audits/:id/reject", h.RejectSQLAudit)
+
 	// 日志
 	admin.Get("/logs/audit", h.ListAuditLogs)
 	admin.Get("/logs/request", h.ListRequestLogs)
@@ -136,6 +162,11 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	user.Post("/chat/stream", h.ChatStream)
 	user.Get("/conversations", h.ListConversations)
 	user.Get("/conversations/:id", h.GetConversation)
+	user.Delete("/conversations/:id", h.DeleteConversation)
+	user.Get("/runtime/jobs", h.ListRuntimeJobs)
+	user.Get("/runtime/jobs/:id", h.GetRuntimeJob)
+	user.Post("/runtime/jobs/:id/retry", h.RetryRuntimeJob)
+	user.Post("/runtime/jobs/:id/cancel", h.CancelRuntimeJob)
 
 	// IM 绑定（员工个人操作）
 	user.Get("/im/bindings", h.ListMyIMBindings)

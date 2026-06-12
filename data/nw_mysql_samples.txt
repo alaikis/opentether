@@ -1,0 +1,102 @@
+
+== t_profile ==
+id | user_id | real_name | avatar | notification_account | notification_type | gender | birthday | roles | position | authority_scope | currency_work_warehouse | widget_ids
+1 | 20 | 严小聪 | <nil> | <nil> | <nil> | <nil> | <nil> | 1,12,16 | <nil> | <nil> | <nil> | <nil>
+2 | 27 | 宽 | <nil> | <nil> | <nil> | <nil> | <nil> | 2,8 | <nil> | 1,16,23,29,36,41,43,47,50,59,63,67,79,83,96,2,4,6,80,17,21,22,24,27,30,32,34,37,... | <nil> | <nil>
+3 | 16 | 严财 | <nil> | <nil> | <nil> | <nil> | <nil> | 4,5 | <nil> | <nil> | <nil> | <nil>
+
+== t_depart ==
+id | name | org_id | parent_id | brief | contact | phone | email | account_type | account_id | status | created_at | updated_at | type | created_by
+1 | General Manager | 1 | <nil> | General Manager | Fee Yan | 31 (0)681221636 | feeyan@e2c-energy.com | <nil> | <nil> | 1 | 2024-07-31 15:11:34 +0800 CST | 2024-07-31 15:11:34 +0800 CST | actual | <nil>
+2 | Warehouse Department | 1 | <nil> | Warehouse Department | <nil> | <nil> | <nil> | <nil> | <nil> | 1 | 2024-07-31 15:15:44 +0800 CST | 2024-07-31 15:16:18 +0800 CST | actual | <nil>
+3 | Financial Department | 1 | <nil> | Financial Department | <nil> | <nil> | <nil> | <nil> | <nil> | 1 | 2024-07-31 15:20:21 +0800 CST | 2024-07-31 15:20:21 +0800 CST | actual | <nil>
+
+== t_role ==
+id | name | depart_id | status | created_at | updated_at | authority_scope
+1 | General Manager | 1 | 1 | 2024-07-31 15:12:11 +0800 CST | 2024-08-01 16:59:32 +0800 CST | 1,16,23,29,36,41,43,47,59,79,2,4,6,17,21,22,24,27,30,32,34,37,39,40,42,44,48,60,...
+2 | Warehouse Manager | 2 | 1 | 2024-07-31 15:17:10 +0800 CST | 2024-08-01 17:01:13 +0800 CST | 1,2,4,6,3,10,15,5,12,13,14,76,7,8,9,11,36,37,39,40,38,41,42,29,30,32,34,31,35,33...
+3 | Financial Officer | 3 | 1 | 2024-07-31 15:21:26 +0800 CST | 2024-08-01 17:02:52 +0800 CST | 1,2,4,6,3,10,15,5,12,13,14,76,7,8,9,11,36,37,39,40,38,41,42,79,59,60,61,62
+
+== t_order ==
+id | shop_id | order_no | shop_order_no | shipping_standard | order_status | billing_address | shipping_address | shipper_id | remark | inv_remark | ref_order | meta | transaction_id | payment_method | currency | purchase_time | create_time | update_time | freeze | declare | fulfillment_document | sale_staff_id | vip_id | extra_data | invoice_official | invoice_proforma | show_tel | invoice_without_email | perform_without_email | labels | expected_shipping_time | latest_updated_time | delivery_time | freeze_code | delivery_mechanism | ref_bundle_id | vip_group_id | primary_station_id | warehouse_id | snapshot
+1 | 5 | DN2024102897499899 | <nil> | Logistics transportation | 201 | 361 | 361 | <nil> | <nil> | <nil> | <nil> | <nil> | 1 | bank_transfer | EUR | 1730084602 | 2024-10-28 11:03:22 +0800 CST | 2025-08-06 17:31:30 +0800 CST | 0 | 0 | [{"18":{"id":18,"name":"Order Products List","url":"\/\/assets.initcdn.com\/t\/2... | 1 | <nil> | {"customer_type":"vip_group","shipping_address_id":"361","vip_group":"2","billin... | <nil> | //assets.initcdn.com/v/2024/10/28/rvV3jkB2FZ.pdf | 1 | 0 | 0 | <nil> | <nil> | 2025-08-06 17:31:30 +0800 CST | <nil> | <nil> | 200 | <nil> | 1 | 1 | 2 | <nil>
+2 | 5 | DN2024102850554810 | <nil> | Logistics transportation | 200 | 361 | 361 | <nil> | <nil> | <nil> | <nil> | <nil> | 2 | bank_transfer | EUR | 1730085234 | 2024-10-28 11:13:54 +0800 CST | 2025-11-21 17:31:51 +0800 CST | 0 | 0 | [{"18":{"id":"18","name":"Order Products List","url":"\/\/assets.initcdn.com\/v\... | 1 | <nil> | {"customer_type":"vip_group","shipping_address_id":"361","vip_group":"2","billin... | <nil> | //assets.initcdn.com/y/2024/10/28/W044ZU1ntE.pdf | 1 | 0 | 0 | <nil> | <nil> | 2025-11-21 17:31:51 +0800 CST | <nil> | <nil> | 200 | <nil> | 1 | 1 | 2 | <nil>
+3 | 5 | DN2024103054100101 | <nil> | Self pickup | 2 | 361 | 361 | <nil> | <nil> | <nil> | <nil> | <nil> | 3 | bank_transfer | EUR | 1730268422 | 2024-10-30 14:07:03 +0800 CST | 2025-08-06 17:31:30 +0800 CST | 0 | 0 | [{"18":{"id":"18","name":"Order Products List","url":"\/\/assets.initcdn.com\/o\... | 1 | <nil> | {"customer_type":"vip_group","shipping_address_id":"361","vip_group":"2","billin... | <nil> | //assets.initcdn.com/k/2024/10/30/4tdmgO0sQA.pdf | 1 | 0 | 0 | <nil> | <nil> | 2025-08-06 17:31:30 +0800 CST | <nil> | <nil> | 200 | <nil> | 1 | 1 | 2 | <nil>
+
+== t_order_item ==
+id | order_id | sku_id | original_sku_id | quantity | price | actual_price_id | shop_order_item_primary_key | shop_order_id | state | cargo_id | sale_staff_id | adjust_price | actual_adjust_price_id | discount | actual_discount_amount_id | vat_amount | actual_vat_amount_id | meta | extra_data | created_time | updated_time | bundle_id | progress
+1 | 1 | 102 | <nil> | 36 | 64.92 | <nil> | Bearer eB)_U_P5 | <nil> | 1 | <nil> | 1 | 0.00 | <nil> | 0.00 | <nil> | 490.78 | <nil> | <nil> | <nil> | 2024-10-28 11:03:22 +0800 CST | 2024-10-28 11:03:22 +0800 CST | <nil> | 200
+2 | 1 | 428 | <nil> | 1 | 1230.00 | <nil> | Bearer eB)_U_P5 | <nil> | 1 | <nil> | 1 | 0.00 | <nil> | 0.00 | <nil> | 258.30 | <nil> | <nil> | <nil> | 2024-10-28 11:03:22 +0800 CST | 2024-10-28 11:03:22 +0800 CST | <nil> | 200
+3 | 2 | 98 | <nil> | 36 | 71.26 | <nil> | Bearer eB)_U_P5 | <nil> | 1 | <nil> | 1 | 0.00 | <nil> | 0.00 | <nil> | 538.70 | <nil> | <nil> | <nil> | 2024-10-28 11:13:54 +0800 CST | 2024-10-28 11:13:54 +0800 CST | <nil> | 200
+
+== t_order_amount ==
+id | currency | subject | amount | actual_amount_id | state | order_id | fee_code | create_time | update_time
+1 | EUR | Product Total | 3567.12 | <nil> | 1 | 1 | sub_total | 2024-10-28 11:03:22 +0800 CST | 2024-10-28 11:03:22 +0800 CST
+2 | EUR | Discount | 0.00 | <nil> | 1 | 1 | discount_fee | 2024-10-28 11:03:22 +0800 CST | 2024-10-28 11:03:22 +0800 CST
+3 | EUR | Actual Shipping Fee | 158.31 | <nil> | 1 | 1 | actual_shipping | 2024-10-28 11:03:22 +0800 CST | 2024-10-28 11:03:22 +0800 CST
+
+== t_order_sales_profit ==
+id | order_id | order_item_id | sku_id | pkg_item_id | qty | cost_price | purchase_price | sale_price | warehouse_id | state | created_at | updated_at
+3 | 329 | 907 | 68 | 2021 | 10 | 0.000 | 40.000 | 80.000 | 2 | 1 | 2026-04-13 14:51:21 +0800 CST | 2026-04-13 14:51:21 +0800 CST
+4 | 329 | 907 | 68 | 2020 | 31 | 0.000 | 40.000 | 80.000 | 2 | 1 | 2026-04-13 14:51:22 +0800 CST | 2026-04-13 14:51:22 +0800 CST
+5 | 329 | 907 | 68 | 2019 | 31 | 0.000 | 40.000 | 80.000 | 2 | 1 | 2026-04-13 14:51:22 +0800 CST | 2026-04-13 14:51:22 +0800 CST
+
+== t_inventory ==
+id | tray_id | sku_id | quantity | remark | updated_at | created_at | ref_pkg_item_id | staff_id | freeze | status | batch_no | ref_purchase_item_batch_item | related_inventory_id | completed
+3 | 1 | 269 | 34 | dsds | 2025-07-28 09:40:47 +0800 CST | 2024-05-11 00:00:00 +0800 CST | <nil> | 4 | 0 | 1 | <nil> | <nil> | <nil> | 1
+14 | 1 | 35 | 1 | create the purchase task by system | 2025-07-28 09:40:47 +0800 CST | 2024-06-13 17:29:24 +0800 CST | 64 | 4 | 0 | 0 | <nil> | <nil> | 13 | 1
+16 | 1 | 130 | 1 | create the purchase task by system | 2025-07-28 09:40:47 +0800 CST | 2024-06-13 17:30:08 +0800 CST | 61 | 4 | 0 | 0 | <nil> | <nil> | 15 | 1
+
+== t_inventory_cost_summary ==
+id | sku_id | warehouse_id | quantity | total_cost | total_vat | total_cost_gross | avg_unit_cost | avg_unit_vat | avg_unit_cost_gross | active_batch_count | created_at | updated_at
+3 | 510 | 2 | 12 | 96.0000 | 20.1600 | 116.1600 | 8.0000 | 1.6800 | 9.6800 | 2 | 2026-04-09 13:40:07 +0800 CST | 2026-04-09 15:32:28 +0800 CST
+4 | 424 | 2 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0 | 2026-04-09 15:49:39 +0800 CST | 2026-04-27 10:18:53 +0800 CST
+5 | 418 | 2 | 42 | 3700.0000 | 567.0000 | 4267.0000 | 88.0952 | 13.5000 | 101.5952 | 3 | 2026-04-09 15:51:13 +0800 CST | 2026-04-13 13:32:09 +0800 CST
+
+== t_inventory_cost_log ==
+id | sku_id | warehouse_id | tray_id | operation_type | operation_no | batch_no | quantity | remaining_quantity | balance_quantity | amount_id | vat_amount_id | unit_cost | unit_vat | unit_cost_gross | total_cost | total_vat | total_cost_gross | ref_type | ref_id | consume_details | exhausted | staff_id | remark | created_at | updated_at
+11 | 510 | 2 | 3 | PURCHASE | I2026040913400600000046 | P-85-11 | 10 | 0 | 10 | 1348 | 1349 | 10.0000 | 2.1000 | 12.1000 | 100.0000 | 21.0000 | 121.0000 | purchase | 85 | <nil> | 1 | 1 | <nil> | 2026-04-09 13:40:07 +0800 CST | 2026-04-09 15:29:54 +0800 CST
+12 | 510 | 2 | 3 | PURCHASE | I2026040913413000001341 | P-86-12 | 20 | 10 | 30 | 1351 | 1352 | 8.0000 | 1.6800 | 9.6800 | 160.0000 | 33.6000 | 193.6000 | purchase | 86 | <nil> | 0 | 1 | <nil> | 2026-04-09 13:41:31 +0800 CST | 2026-04-09 15:29:54 +0800 CST
+16 | 510 | 2 | 3 | ADJUST_OUT | AO2026040915085500007859 | <nil> | -5 | 0 | 10 | <nil> | <nil> | 10.0000 | 2.1000 | 12.1000 | 50.0000 | 10.5000 | 60.5000 | adjust | <nil> | [{"log_id": 11, "batch_no": "P-85-11", "unit_vat": 2.1, "amount_id": 1348, "unit... | 1 | 1 | adjust inventory by staff | 2026-04-09 15:08:56 +0800 CST | 2026-04-09 15:08:56 +0800 CST
+
+== t_item ==
+id | catalog_id | title | condition | shop_id | description | labels | mpn | brand_id | attribute | mqq | step | ean | primary_image_key | images | video | meta | suggest_price | anchor_price | price | sale_price | cost | weight | length | width | height | in_stock | shop_sku | shop_sku_id | highlights | weight_unit | length_unit | ref_origin_item_id | origin_model | item_type_inventory_category | item_type_id
+1 | <nil> | 410W P-Type Full Black Monofacial Half-Cell Module  1722*1134*30mm | new | 1 | <p><img class="img-fluid" src="/catalog/产品/太阳能板/honorsolar HY-M10/10... | <nil> | OSP015 | <nil> | <nil> | 1 | 1 | <nil> | id | {"3241": ["http://www.e2c-energy.com/catalog/\u4ea7\u54c1/\u592a\u9633\u80fd\u67... | <nil> | <nil> | <nil> | <nil> | 59.00 | 54.44 | <nil> | 22.50 | 0.00 | 0.00 | 0.00 | 1 | 143 | 143 | <nil> | kg | cm | <nil> |  | <nil> | <nil>
+2 | <nil> | Qn Solar 420WP Double Glass N-Type FulI Black Solar Panel 1762x1134x30mm | new | 1 | <p><img class="img-fluid" style="display: block; margin-left: auto; margin-right... | <nil> | OSP0023 | <nil> | <nil> | 1 | 1 | <nil> | id | {"3189": ["http://www.e2c-energy.com/catalog/\u4ea7\u54c1/\u592a\u9633\u80fd\u67... | <nil> | <nil> | <nil> | <nil> | 77.22 | 62.21 | <nil> | 24.00 | 0.00 | 0.00 | 0.00 | 1 | 238 | 238 | <nil> | kg | cm | <nil> |  | <nil> | <nil>
+3 | <nil> | EGYO Pro 580WP N-Type full black solar panel 2278x1134x30mm | new | 1 | <p style="text-align: center;"><img class="img-fluid" src="/catalog/产品/太�... | <nil> | ISP0010 | <nil> | <nil> | 1 | 1 | <nil> | id | {"3162": ["http://www.e2c-energy.com/catalog/\u4ea7\u54c1/\u592a\u9633\u80fd\u67... | <nil> | <nil> | <nil> | <nil> | 140.84 | 100.72 | <nil> | 27700.00 | 0.00 | 0.00 | 0.00 | 1 | 43 | 43 | <nil> | g | cm | <nil> |  | <nil> | <nil>
+
+== t_variants ==
+id | product_id | mqq | step | standard | ean | sku | price | sale_price | cost | weight | length | width | height | in_stock | shop_sku | shop_sku_id | weight_unit | length_unit | suggest_price | over_sale_value | ref_origin_sku_id | primary_cargo | dg | dg_standard | dg_amr_version | origin_sku | inv_sort | hs_code | unit | details_support
+1 | 1 | 1 | 1 | {"id": 3241} | <nil> | <nil> | 59.00 | 54.44 | <nil> | 22.50 | 0.00 | 0.00 | 0.00 | 1 | OSP015 | 3241 | kg | cm | <nil> | 0 | 161 | <nil> | 0 | <nil> | 2025 |  | 0 | <nil> | <nil> | 1
+2 | 2 | 1 | 1 | {"id": 3189} | <nil> | <nil> | 77.22 | 62.21 | <nil> | 24.00 | 1.00 | 1.00 | 1.00 | 1 | OSP0023 | 3189 | kg | cm | <nil> | 0 | 251 | <nil> | 0 | <nil> | 2025 |  | 0 | <nil> | <nil> | 1
+3 | 3 | 1 | 1 | {"id": 3162} | <nil> | <nil> | 140.84 | 100.72 | <nil> | 27700.00 | 0.00 | 0.00 | 0.00 | 1 | ISP0010 | 3162 | g | cm | <nil> | 0 | 68 | <nil> | 0 | <nil> | 2025 |  | 0 | <nil> | <nil> | 1
+
+== t_purchase ==
+id | supplier_id | batch_no | purchaser_id | transaction_id | ref_purchase_order_id | receipt_no | currency | remark | status | freeze | created_at | updated_at | third_extra_data | progress | ref_bundle_id
+1 | <nil> | <nil> | 4 | <nil> | <nil> | <nil> | EUR | dsdsd | 1 | 0 | 2024-06-25 10:17:01 +0800 CST | 2024-06-25 10:17:01 +0800 CST | <nil> | 6 | <nil>
+2 | <nil> | <nil> | <nil> | <nil> | <nil> | <nil> | EUR | dsdsd | 0 | 0 | 2024-06-25 15:31:04 +0800 CST | 2024-06-25 15:31:04 +0800 CST | <nil> | 1 | <nil>
+3 | <nil> | <nil> | <nil> | <nil> | <nil> | <nil> | EUR | dsdsd | 0 | 0 | 2024-06-25 15:32:45 +0800 CST | 2024-06-25 15:32:45 +0800 CST | <nil> | 1 | <nil>
+
+== t_purchase_item ==
+id | purchase_id | figure | sku_id | quantity | snap_actual_price_id | snap_purchase_price_id | vat_amount_id | taxation | state | async_state | created_at | updated_at | ref_order_package_item_id | wms_id | supplier_id | progress | remark | arrived
+10 | 1 | 65 | 41 | 1 | <nil> | <nil> | <nil> | 0.00 | 1 | 0 | 2024-06-13 17:15:04 +0800 CST | 2024-06-25 10:21:45 +0800 CST | 65 | 1 | 1 | 150 | 卡里克 | 0
+11 | 1 | 64 | 35 | 1 | <nil> | <nil> | <nil> | 0.00 | 1 | 0 | 2024-06-13 17:29:24 +0800 CST | 2024-06-25 10:21:45 +0800 CST | 64 | 1 | 1 | 150 | 测试 | 0
+12 | 1 | 61 | 130 | 1 | <nil> | <nil> | <nil> | 0.00 | 1 | 0 | 2024-06-13 17:30:08 +0800 CST | 2024-06-25 10:21:45 +0800 CST | 61 | 1 | 1 | 150 | dsd | 0
+
+== t_member ==
+id | name | avatar | company_name | tax_number | source | billing_address_id | shipping_address_id | customer_group_id | bind_manager_id | remark | ref_id | active | created_at | updated_at
+1 | New test | <nil> | Test Company1 | NL1234567891 | <nil> | 501 | 501 | 1,2 | 1 | <nil> | <nil> | 1 | 2026-04-03 14:28:34 +0800 CST | 2026-04-03 14:28:34 +0800 CST
+2 | Vadym Vitkovskyi | <nil> | Limited Liability Company "Sklotsentr Kharkiv" | 353528720389 | <nil> | 409 | 409 | 1 | 19 | <nil> | <nil> | 1 | 2026-04-03 14:28:34 +0800 CST | 2026-04-03 14:28:34 +0800 CST
+3 | junjie rin | <nil> | SRL MARA-A ENERGIES | BE0798751943 | <nil> | 455 | 455 | 2 | 1 | <nil> | <nil> | 1 | 2026-04-03 14:28:34 +0800 CST | 2026-04-03 14:28:34 +0800 CST
+
+== t_warehouse ==
+id | name | station_id | address_id | director_id | comm_id | brief | status | input_tmp_area | output_tmp_area | operate_type | authorize_id
+1 | Spain warehouse | 4 | 428 | 1 | <nil> | Spain warehouse | 1 | 2 | 1 | third_party | 14
+2 |  荷兰&比利时 station - 仓库1 | 1 | 410 | 1 | <nil> | 测试 - 仓库 - 荷兰&比利时 station 1 | 1 | 3 | 4 | self | 
+3 | Poland house | 5 | 434 | 1 | <nil> | Poland house | 1 | 5 | 6 | third_party | 11
+
+== t_report_object_group ==
+id | name | staff_id | brief | object_staff_ids | created_at | updated_at | state | primary
+1 | the primary report object group | 4 | the primary report object group | 5 | 2024-01-25 11:55:45 +0800 CST | 2024-01-25 11:55:45 +0800 CST | 1 | 1
+2 | dsds | 4 | dsdsd | 5 | 2024-01-25 11:58:52 +0800 CST | 2024-01-25 11:58:52 +0800 CST | 1 | 1
+3 | fdfd | 4 | fdfdf | 9 | 2024-01-25 12:00:25 +0800 CST | 2024-01-25 12:00:25 +0800 CST | 1 | 1

@@ -99,7 +99,20 @@ function createAuthStore() {
         const newToken = data.token || data.access_token;
         if (newToken && browser) {
           localStorage.setItem("token", newToken);
-          update((s) => ({ ...s, token: newToken }));
+          // 同步刷新用户信息（角色可能已变更）
+          if (data.user) {
+            const updatedUser: User = {
+              id: data.user.id || "",
+              username: data.user.username || "",
+              name: data.user.name || "",
+              email: data.user.email || "",
+              role: data.user.role || "user",
+            };
+            localStorage.setItem("user", JSON.stringify(updatedUser));
+            update((s) => ({ ...s, token: newToken, user: updatedUser }));
+          } else {
+            update((s) => ({ ...s, token: newToken }));
+          }
         }
         return true;
       } catch {

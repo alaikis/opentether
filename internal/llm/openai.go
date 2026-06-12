@@ -45,7 +45,7 @@ func (c *OpenAIClient) ChatCompletion(ctx interface{}, req ChatRequest) (*ChatRe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := c.provider.APIBase + "/chat/completions"
+	url := c.provider.APIBase
 	if !strings.HasSuffix(url, "/") {
 		url += "/"
 	}
@@ -92,7 +92,7 @@ func (c *OpenAIClient) ChatCompletionStream(ctx interface{}, req ChatRequest) (*
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := c.provider.APIBase + "/chat/completions"
+	url := c.provider.APIBase
 	if !strings.HasSuffix(url, "/") {
 		url += "/"
 	}

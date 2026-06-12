@@ -128,7 +128,7 @@ func (s *IMService) ConfirmBinding(token, imUserID, imUserName string) (*models.
 // ListAvailablePlatforms 列出所有可绑定的 IM 平台
 func (s *IMService) ListAvailablePlatforms() ([]PlatformInfo, error) {
 	var configs []models.ImConfig
-	if err := s.db.Where("enabled = ?", true).Find(&configs).Error; err != nil {
+	if err := s.db.Where("enabled = ?", true).Order("created_at DESC").Find(&configs).Error; err != nil {
 		return nil, err
 	}
 
@@ -148,21 +148,23 @@ func (s *IMService) ListAvailablePlatforms() ([]PlatformInfo, error) {
 }
 
 // ExternalBindUser 外部系统通过 API Key 代员工绑定 IM
-// globalUserID: 外部系统（OA/ERP）中的用户唯一标识
-// userName: 员工姓名
-func (s *IMService) ExternalBindUser(globalUserID, userName, imConfigID, imUserID, imUserName string) (map[string]interface{}, error) {
-	// 查找或创建用户
-	var user models.User
-	err := s.db.Where("global_user_id = ?", globalUserID).First(&user).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			// 自动创建用户
-			user = models.User{
-				GlobalUserID: globalUserID,
-				Name:         userName,
-				Role:         models.RoleUser,
-				Status:       "active",
-			}
+	// companyID: 公司 ID（外部系统传入，如 OA/ERP 中的公司标识）
+	// globalUserID: 外部系统（OA/ERP）中的用户唯一标识
+	// userName: 员工姓名
+	func (s *IMService) ExternalBindUser(companyID, globalUserID, userName, imConfigID, imUserID, imUserName string) (map[string]interface{}, error) {
+		// 查找或创建用户
+		var user models.User
+		err := s.db.Where("global_user_id = ?", globalUserID).First(&user).Error
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				// 自动创建用户
+				user = models.User{
+					CompanyID:    companyID,
+					GlobalUserID: globalUserID,
+					Name:         userName,
+					Role:         models.RoleUser,
+					Status:       "active",
+				}
 			if createErr := s.db.Create(&user).Error; createErr != nil {
 				return nil, fmt.Errorf("创建用户失败: %w", createErr)
 			}

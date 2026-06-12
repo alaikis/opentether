@@ -15,6 +15,7 @@ type Config struct {
 	Executor  ExecutorConfig  `yaml:"executor"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	SMTP      SMTPConfig      `yaml:"smtp"`
+	Storage   StorageConfig   `yaml:"storage"`
 }
 
 type ServerConfig struct {
@@ -83,8 +84,18 @@ type ExecutorConfig struct {
 }
 
 type EmbeddedConfig struct {
-	MaxConcurrent int    `yaml:"max_concurrent"`
-	Timeout       string `yaml:"timeout"`
+	MaxConcurrent     int           `yaml:"max_concurrent"`
+	MaxLoopIterations int           `yaml:"max_loop_iterations"` // 0 = 不限制
+	Timeout           string        `yaml:"timeout"`
+	Sandbox           SandboxConfig `yaml:"sandbox"`
+}
+
+type SandboxConfig struct {
+	Enabled     bool   `yaml:"enabled"`      // enable sandbox
+	Image       string `yaml:"image"`        // Docker image
+	MemoryLimit string `yaml:"memory_limit"` // e.g., "256m"
+	CPULimit    string `yaml:"cpu_limit"`    // e.g., "0.5"
+	WorkDir     string `yaml:"work_dir"`     // host working directory
 }
 
 type IndependentConfig struct {
@@ -104,6 +115,28 @@ type EmbeddingConfig struct {
 	Dimension     int    `yaml:"dimension"`  // 向量维度
 	Provider      string `yaml:"provider"`   // embedding 提供者: tfidf, openai, local
 	StoreProvider string `yaml:"store"`      // vectorstore 提供者: memory, milvus, qdrant
+}
+
+// StorageConfig holds object storage configuration.
+type StorageConfig struct {
+	Type  string             `yaml:"type"` // "local" or "s3"
+	Local LocalStorageConfig `yaml:"local"`
+	S3    S3StorageConfig    `yaml:"s3"`
+}
+
+type LocalStorageConfig struct {
+	Path    string `yaml:"path"`
+	BaseURL string `yaml:"base_url"`
+}
+
+type S3StorageConfig struct {
+	Endpoint  string `yaml:"endpoint"`
+	Region    string `yaml:"region"`
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+	Bucket    string `yaml:"bucket"`
+	UseSSL    bool   `yaml:"use_ssl"`
+	PathStyle bool   `yaml:"path_style"`
 }
 
 // SMTPConfig SMTP 邮件配置
@@ -155,8 +188,16 @@ func Load() *Config {
 		Executor: ExecutorConfig{
 			Mode: "embedded",
 			EmbeddedConfig: EmbeddedConfig{
-				MaxConcurrent: 5,
-				Timeout:       "1h",
+				MaxConcurrent:     5,
+				MaxLoopIterations: 50,
+				Timeout:           "1h",
+				Sandbox: SandboxConfig{
+					Enabled:     false,
+					Image:       "ubuntu:22.04",
+					MemoryLimit: "256m",
+					CPULimit:    "0.5",
+					WorkDir:     "data/sandbox",
+				},
 			},
 		},
 		SMTP: SMTPConfig{
@@ -165,6 +206,13 @@ func Load() *Config {
 			Port:       587,
 			Encryption: "tls",
 			FromName:   "Wisehoof System",
+		},
+		Storage: StorageConfig{
+			Type: "local",
+			Local: LocalStorageConfig{
+				Path:    "data/output",
+				BaseURL: "http://localhost:8886/downloads",
+			},
 		},
 	}
 

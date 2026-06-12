@@ -6,38 +6,120 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alaikis/opentether/internal/embedding"
 	"github.com/alaikis/opentether/internal/models"
+	"github.com/alaikis/opentether/internal/vectorstore"
 	"gorm.io/gorm"
 )
 
 // ============================================
-// Long-term Memory System - 长期记忆
+// Letta-inspired Memory System
 //
-// 用户记忆: 偏好、历史上下文、常用操作
-// 用户组记忆: 共享知识、团队规则
-// 类型定义见 models.UserMemory, models.GroupMemory, models.AgentScript
+// Core Memory:  用户/公司 Soul (UserProfile / CompanyProfile)
+// Archival Memory: 长期记忆 + 语义召回 (UserMemory / GroupMemory)
+// Conversation Memory: 对话窗口管理 (内置在 ExecuteLoop)
 // ============================================
 
-// UserMemory 用户长期记忆 (alias to models)
-type UserMemory = models.UserMemory
+// ── Aliases ──────────────────────────────────
+type (
+	UserMemory     = models.UserMemory
+	GroupMemory    = models.GroupMemory
+	UserProfile    = models.UserProfile
+	CompanyProfile = models.CompanyProfile
+)
 
-// GroupMemory 用户组共享记忆 (alias to models)
-type GroupMemory = models.GroupMemory
-
-// AgentScript 生成的脚本 (alias to models)
-type AgentScript = models.AgentScript
-
-// LongTermMemory 长期记忆管理器
-type LongTermMemory struct {
+// ── LettaMemory 统一记忆管理器 ──────────────
+type LettaMemory struct {
 	db *gorm.DB
 }
 
-func NewLongTermMemory(db *gorm.DB) *LongTermMemory {
-	return &LongTermMemory{db: db}
+func NewLettaMemory(db *gorm.DB) *LettaMemory {
+	return &LettaMemory{db: db}
 }
 
-// SaveUserMemory 保存用户记忆
-func (m *LongTermMemory) SaveUserMemory(userID, memType, key, content string, priority int) error {
+// ════════════════════════════════════════════
+// Core Memory (Soul / Profile)
+// ════════════════════════════════════════════
+
+// GetUserSoul 获取用户 Soul（含默认值）
+func (m *LettaMemory) GetUserSoul(userID string) *UserProfile {
+	var p UserProfile
+	if err := m.db.Where("user_id = ?", userID).First(&p).Error; err != nil {
+		return &UserProfile{
+			Persona:            "你是 OpenTether AI 助手，专业且友好。",
+			Human:              "用户是公司员工。",
+			LanguagePreference: "zh-CN",
+		}
+	}
+	return &p
+}
+
+// UpsertUserSoul 创建或更新用户 Soul
+func (m *LettaMemory) UpsertUserSoul(userID string, persona, human, preferences string) error {
+	var p UserProfile
+	err := m.db.Where("user_id = ?", userID).First(&p).Error
+	if err == gorm.ErrRecordNotFound {
+		p = UserProfile{
+			UserID:             userID,
+			Persona:            persona,
+			Human:              human,
+			Preferences:        preferences,
+			LanguagePreference: "zh-CN",
+		}
+		return m.db.Create(&p).Error
+	}
+	if err != nil {
+		return err
+	}
+	p.Persona = persona
+	p.Human = human
+	p.Preferences = preferences
+	return m.db.Save(&p).Error
+}
+
+// GetCompanySoul 获取公司 Soul
+func (m *LettaMemory) GetCompanySoul() *CompanyProfile {
+	var p CompanyProfile
+	if err := m.db.First(&p).Error; err != nil {
+		return nil
+	}
+	return &p
+}
+
+// UpsertCompanySoul 创建或更新公司 Soul
+func (m *LettaMemory) UpsertCompanySoul(name, persona, brandTone, industry string) error {
+	var p CompanyProfile
+	err := m.db.First(&p).Error
+	if err == gorm.ErrRecordNotFound {
+		p = CompanyProfile{
+			Name:      name,
+			Persona:   persona,
+			BrandTone: brandTone,
+			Industry:  industry,
+		}
+		return m.db.Create(&p).Error
+	}
+	if err != nil {
+		return err
+	}
+	p.Name = name
+	p.Persona = persona
+	p.BrandTone = brandTone
+	p.Industry = industry
+	return m.db.Save(&p).Error
+}
+
+// ════════════════════════════════════════════
+// Archival Memory (长期记忆 + 召回)
+// ════════════════════════════════════════════
+
+// SaveArchivalMemory 用户存档记忆
+func (m *LettaMemory) SaveArchivalMemory(userID, memType, key, content string, priority int) error {
+	return m.UpsertUserMemory(userID, memType, key, content, priority)
+}
+
+// UpsertUserMemory 创建或更新用户长期记忆
+func (m *LettaMemory) UpsertUserMemory(userID, memType, key, content string, priority int) error {
 	var existing UserMemory
 	err := m.db.Where("user_id = ? AND type = ? AND key = ?", userID, memType, key).First(&existing).Error
 	if err == nil {
@@ -45,7 +127,6 @@ func (m *LongTermMemory) SaveUserMemory(userID, memType, key, content string, pr
 		existing.Priority = priority
 		return m.db.Save(&existing).Error
 	}
-
 	mem := &UserMemory{
 		UserID:   userID,
 		Type:     memType,
@@ -56,8 +137,358 @@ func (m *LongTermMemory) SaveUserMemory(userID, memType, key, content string, pr
 	return m.db.Create(mem).Error
 }
 
-// GetUserMemory 获取用户记忆
-func (m *LongTermMemory) GetUserMemory(userID, memType string) ([]UserMemory, error) {
+// RecallUserMemory 按用户召回记忆（关键词 + 时间衰减）
+func (m *LettaMemory) RecallUserMemory(userID, query string, limit int) ([]UserMemory, error) {
+	if query == "" {
+		return m.GetRecentUserMemories(userID, limit)
+	}
+
+	keywords := strings.Fields(query)
+	var memories []UserMemory
+
+	for _, kw := range keywords {
+		var matched []UserMemory
+		pattern := "%" + kw + "%"
+		m.db.Where("user_id = ? AND (content LIKE ? OR key LIKE ?)", userID, pattern, pattern).
+			Order("priority DESC, updated_at DESC").
+			Limit(5).Find(&matched)
+		memories = append(memories, matched...)
+	}
+
+	// 去重
+	seen := make(map[string]bool)
+	var result []UserMemory
+	for _, m := range memories {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			result = append(result, m)
+		}
+	}
+
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+// GetRecentUserMemories 获取用户最近记忆
+func (m *LettaMemory) GetRecentUserMemories(userID string, limit int) ([]UserMemory, error) {
+	var memories []UserMemory
+	query := m.db.Where("user_id = ?", userID).Order("updated_at DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	err := query.Find(&memories).Error
+	return memories, err
+}
+
+// RecallUserMemorySemantic 使用向量语义相似度召回用户长期记忆。
+// 当前实现复用内置 TF-IDF + memory vectorstore，按请求临时构建小索引，避免引入额外外部依赖。
+func (m *LettaMemory) RecallUserMemorySemantic(userID, query string, limit int) ([]UserMemory, error) {
+	if strings.TrimSpace(query) == "" {
+		return m.GetRecentUserMemories(userID, limit)
+	}
+
+	var memories []UserMemory
+	if err := m.db.Where("user_id = ?", userID).
+		Order("priority DESC, updated_at DESC").
+		Limit(200).
+		Find(&memories).Error; err != nil {
+		return nil, err
+	}
+	if len(memories) == 0 {
+		return nil, nil
+	}
+
+	docs := make([]string, 0, len(memories)+1)
+	docs = append(docs, query)
+	for _, mem := range memories {
+		docs = append(docs, memorySearchText(mem.Type, mem.Key, mem.Content))
+	}
+
+	embedder, err := embedding.Create("tfidf", map[string]interface{}{"corpus": docs})
+	if err != nil {
+		return nil, err
+	}
+	store, err := vectorstore.CreateStore("memory", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	memoryByID := make(map[string]UserMemory, len(memories))
+	for _, mem := range memories {
+		id := mem.ID
+		vec, err := embedder.Embed(memorySearchText(mem.Type, mem.Key, mem.Content))
+		if err != nil {
+			continue
+		}
+		_ = store.Index(id, mem.Key, vec)
+		memoryByID[id] = mem
+	}
+	queryVec, err := embedder.Embed(query)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := store.Search(queryVec, limit, 0.08)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]UserMemory, 0, len(matches))
+	seen := map[string]bool{}
+	for _, match := range matches {
+		if mem, ok := memoryByID[match.SkillID]; ok && !seen[mem.ID] {
+			result = append(result, mem)
+			seen[mem.ID] = true
+		}
+	}
+	return result, nil
+}
+
+// SaveGroupMemory 保存组共享记忆
+func (m *LettaMemory) SaveGroupMemory(groupID, memType, key, content string, priority int) error {
+	var existing GroupMemory
+	err := m.db.Where("group_id = ? AND type = ? AND key = ?", groupID, memType, key).First(&existing).Error
+	if err == nil {
+		existing.Content = content
+		existing.Priority = priority
+		return m.db.Save(&existing).Error
+	}
+	mem := &GroupMemory{
+		GroupID:  groupID,
+		Type:     memType,
+		Key:      key,
+		Content:  content,
+		Priority: priority,
+	}
+	return m.db.Create(mem).Error
+}
+
+// RecallGroupMemories 召回组共享记忆
+func (m *LettaMemory) RecallGroupMemories(groupIDs []string, query string, limit int) ([]GroupMemory, error) {
+	if len(groupIDs) == 0 {
+		return nil, nil
+	}
+
+	var memories []GroupMemory
+	if query != "" {
+		keywords := strings.Fields(query)
+		for _, kw := range keywords {
+			pattern := "%" + kw + "%"
+			var matched []GroupMemory
+			m.db.Where("group_id IN ? AND (content LIKE ? OR key LIKE ?)", groupIDs, pattern, pattern).
+				Order("priority DESC, updated_at DESC").
+				Limit(5).Find(&matched)
+			memories = append(memories, matched...)
+		}
+	} else {
+		m.db.Where("group_id IN ?", groupIDs).Order("priority DESC").
+			Limit(limit).Find(&memories)
+	}
+
+	seen := make(map[string]bool)
+	var result []GroupMemory
+	for _, m := range memories {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			result = append(result, m)
+		}
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+// RecallGroupMemoriesSemantic 使用向量语义相似度召回团队/部门共享记忆。
+func (m *LettaMemory) RecallGroupMemoriesSemantic(groupIDs []string, query string, limit int) ([]GroupMemory, error) {
+	if len(groupIDs) == 0 || strings.TrimSpace(query) == "" {
+		return m.RecallGroupMemories(groupIDs, query, limit)
+	}
+
+	var memories []GroupMemory
+	if err := m.db.Where("group_id IN ?", groupIDs).
+		Order("priority DESC, updated_at DESC").
+		Limit(200).
+		Find(&memories).Error; err != nil {
+		return nil, err
+	}
+	if len(memories) == 0 {
+		return nil, nil
+	}
+
+	docs := make([]string, 0, len(memories)+1)
+	docs = append(docs, query)
+	for _, mem := range memories {
+		docs = append(docs, memorySearchText(mem.Type, mem.Key, mem.Content))
+	}
+
+	embedder, err := embedding.Create("tfidf", map[string]interface{}{"corpus": docs})
+	if err != nil {
+		return nil, err
+	}
+	store, err := vectorstore.CreateStore("memory", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	memoryByID := make(map[string]GroupMemory, len(memories))
+	for _, mem := range memories {
+		id := mem.ID
+		vec, err := embedder.Embed(memorySearchText(mem.Type, mem.Key, mem.Content))
+		if err != nil {
+			continue
+		}
+		_ = store.Index(id, mem.Key, vec)
+		memoryByID[id] = mem
+	}
+	queryVec, err := embedder.Embed(query)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := store.Search(queryVec, limit, 0.08)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]GroupMemory, 0, len(matches))
+	seen := map[string]bool{}
+	for _, match := range matches {
+		if mem, ok := memoryByID[match.SkillID]; ok && !seen[mem.ID] {
+			result = append(result, mem)
+			seen[mem.ID] = true
+		}
+	}
+	return result, nil
+}
+
+func memorySearchText(memType, key, content string) string {
+	return strings.TrimSpace(memType + " " + key + " " + content)
+}
+
+// ════════════════════════════════════════════
+// Conversation Memory (对话摘要归档)
+// ════════════════════════════════════════════
+
+// SaveConversationSummary 对话结束后摘要入库
+func (m *LettaMemory) SaveConversationSummary(userID, userQuery, assistantReply string, groupIDs []string) {
+	summary := m.buildSummary(userQuery, assistantReply)
+	timestamp := time.Now().Format("2006-01-02 15:04")
+	key := fmt.Sprintf("对话 %s", timestamp)
+	m.UpsertUserMemory(userID, "conversation", key, summary, 1)
+
+	for _, gid := range groupIDs {
+		topic := m.extractTopic(userQuery)
+		if topic != "" {
+			m.SaveGroupMemory(gid, "topic", topic, summary, 5)
+		}
+	}
+}
+
+func (m *LettaMemory) buildSummary(query, reply string) string {
+	q := truncateStr(query, 200)
+	r := truncateStr(reply, 300)
+	return fmt.Sprintf("用户问题: %s\nAI 回复: %s", q, r)
+}
+
+func (m *LettaMemory) extractTopic(query string) string {
+	for _, kw := range []string{
+		"订单", "销售", "库存", "员工", "成本", "客户",
+		"采购", "报表", "产品", "利润", "业绩",
+		"部门", "仓库", "物流", "广告", "价格",
+	} {
+		if strings.Contains(query, kw) {
+			return kw
+		}
+	}
+	return ""
+}
+
+// ════════════════════════════════════════════
+// Prompt Assembly（组装 Letta-style prompt）
+// ════════════════════════════════════════════
+
+// BuildSoulPrompt 构建含 Soul + Memory 的 system prompt
+func (m *LettaMemory) BuildSoulPrompt(userID string, groupIDs []string, query string, basePrompt string) string {
+	var sb strings.Builder
+
+	// 公司级 Soul
+	company := m.GetCompanySoul()
+	if company != nil {
+		sb.WriteString(fmt.Sprintf("## 公司信息\n- 名称: %s\n- 行业: %s\n", company.Name, company.Industry))
+		if company.BrandTone != "" {
+			sb.WriteString(fmt.Sprintf("- 语调规则: %s\n", company.BrandTone))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 用户级 Soul
+	soul := m.GetUserSoul(userID)
+	sb.WriteString("/" + "* 用户画像 (Soul) */")
+	sb.WriteString(fmt.Sprintf("\n- AI 人格 (Persona): %s\n", soul.Persona))
+	sb.WriteString(fmt.Sprintf("- 用户描述 (Human): %s\n", soul.Human))
+	sb.WriteString("\n")
+
+	// 相关记忆召回：优先向量语义召回，失败时回退关键词召回
+	if query != "" {
+		memories, _ := m.RecallUserMemorySemantic(userID, query, 5)
+		if len(memories) == 0 {
+			memories, _ = m.RecallUserMemory(userID, query, 5)
+		}
+		if len(memories) > 0 {
+			sb.WriteString("## 相关个人长期记忆（语义召回）\n")
+			for _, mem := range memories {
+				sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", mem.Type, mem.Key, truncateStr(mem.Content, 150)))
+			}
+			sb.WriteString("\n")
+		}
+
+		// 组记忆召回：优先向量语义召回，失败时回退关键词召回
+		groupMems, _ := m.RecallGroupMemoriesSemantic(groupIDs, query, 3)
+		if len(groupMems) == 0 {
+			groupMems, _ = m.RecallGroupMemories(groupIDs, query, 3)
+		}
+		if len(groupMems) > 0 {
+			sb.WriteString("## 团队/部门共享记忆（语义召回）\n")
+			for _, mem := range groupMems {
+				sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", mem.Type, mem.Key, truncateStr(mem.Content, 150)))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	// 基础 system prompt
+	sb.WriteString("---\n\n")
+	sb.WriteString(basePrompt)
+
+	return sb.String()
+}
+
+// ── Helpers ──────────────────────────────────
+
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+// ── Deprecated wrappers (keep compatibility) ──
+// 这些包装器保留旧接口，内部委托给 LettaMemory
+
+type LongTermMemory = LettaMemory
+
+func NewLongTermMemory(db *gorm.DB) *LongTermMemory {
+	log.Println("[Memory] Letta-style memory system initialized")
+	return NewLettaMemory(db)
+}
+
+func (m *LettaMemory) SaveUserMemory(userID, memType, key, content string, priority int) error {
+	return m.UpsertUserMemory(userID, memType, key, content, priority)
+}
+
+func (m *LettaMemory) GetUserMemory(userID, memType string) ([]UserMemory, error) {
 	var memories []UserMemory
 	query := m.db.Where("user_id = ?", userID)
 	if memType != "" {
@@ -67,8 +498,7 @@ func (m *LongTermMemory) GetUserMemory(userID, memType string) ([]UserMemory, er
 	return memories, err
 }
 
-// GetUserMemoryByKey 按 key 获取
-func (m *LongTermMemory) GetUserMemoryByKey(userID, key string) (*UserMemory, error) {
+func (m *LettaMemory) GetUserMemoryByKey(userID, key string) (*UserMemory, error) {
 	var mem UserMemory
 	err := m.db.Where("user_id = ? AND key = ?", userID, key).First(&mem).Error
 	if err != nil {
@@ -77,203 +507,10 @@ func (m *LongTermMemory) GetUserMemoryByKey(userID, key string) (*UserMemory, er
 	return &mem, nil
 }
 
-// SaveGroupMemory 保存用户组记忆
-func (m *LongTermMemory) SaveGroupMemory(groupID, memType, key, content string) error {
-	var existing GroupMemory
-	err := m.db.Where("group_id = ? AND type = ? AND key = ?", groupID, memType, key).First(&existing).Error
-	if err == nil {
-		existing.Content = content
-		return m.db.Save(&existing).Error
-	}
-
-	mem := &GroupMemory{
-		GroupID: groupID,
-		Type:    memType,
-		Key:     key,
-		Content: content,
-	}
-	return m.db.Create(mem).Error
+func (m *LettaMemory) GetGroupMemories(groupIDs []string) ([]GroupMemory, error) {
+	return m.RecallGroupMemories(groupIDs, "", 20)
 }
 
-// GetGroupMemories 获取用户组记忆
-func (m *LongTermMemory) GetGroupMemories(groupIDs []string) ([]GroupMemory, error) {
-	var memories []GroupMemory
-	err := m.db.Where("group_id IN ?", groupIDs).Order("priority DESC").Find(&memories).Error
-	return memories, err
-}
-
-// InjectMemoryIntoPrompt 将长期记忆注入 prompt
-func (m *LongTermMemory) InjectMemoryIntoPrompt(userID string, groupIDs []string) string {
-	var sb strings.Builder
-
-	// 用户记忆
-	userMems, _ := m.GetUserMemory(userID, "")
-	if len(userMems) > 0 {
-		sb.WriteString("## 用户记忆\n")
-		for _, mem := range userMems {
-			sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", mem.Type, mem.Key, truncateStr(mem.Content, 200)))
-		}
-	}
-
-	// 组记忆
-	groupMems, _ := m.GetGroupMemories(groupIDs)
-	if len(groupMems) > 0 {
-		sb.WriteString("\n## 团队认知\n")
-		for _, mem := range groupMems {
-			sb.WriteString(fmt.Sprintf("- [%s] %s\n", mem.Key, truncateStr(mem.Content, 200)))
-		}
-	}
-
-	return sb.String()
-}
-
-// ============================================
-// Script Manager - 脚本生成与生命周期管理
-// ============================================
-
-// ScriptManager 脚本管理器
-type ScriptManager struct {
-	db *gorm.DB
-}
-
-func NewScriptManager(db *gorm.DB) *ScriptManager {
-	return &ScriptManager{db: db}
-}
-
-// GenerateScript 从 Skill/文档生成脚本 (bash 优先)
-func (m *ScriptManager) GenerateScript(skillID, name, description, promptTemplate string) (*AgentScript, error) {
-	// 尝试生成 bash 脚本
-	lang := "bash"
-	content := m.generateBashScript(name, description, promptTemplate)
-	if content == "" {
-		// 回退到 Python
-		lang = "python"
-		content = m.generatePythonScript(name, description, promptTemplate)
-	}
-
-	script := &AgentScript{
-		SkillID:     skillID,
-		Name:        name + "." + scriptExt(lang),
-		Language:    lang,
-		Content:     content,
-		Description: description,
-		IsPermanent: false,
-	}
-
-	if err := m.db.Create(script).Error; err != nil {
-		return nil, fmt.Errorf("保存脚本失败: %w", err)
-	}
-
-	log.Printf("[Script] 生成 %s 脚本: %s (%d 字节)", lang, script.Name, len(content))
-	return script, nil
-}
-
-// MakePermanent 将脚本标记为永久（关联经验时调用）
-func (m *ScriptManager) MakePermanent(scriptID, experienceID string) error {
-	return m.db.Model(&AgentScript{}).Where("id = ?", scriptID).Updates(map[string]interface{}{
-		"is_permanent":  true,
-		"experience_id": experienceID,
-		"expires_at":    nil,
-	}).Error
-}
-
-// CleanupExpiredScripts 清理过期脚本（定时任务调用）
-func (m *ScriptManager) CleanupExpiredScripts() (int, error) {
-	result := m.db.Where("is_permanent = ? AND expires_at < ?", false, time.Now()).Delete(&AgentScript{})
-	return int(result.RowsAffected), result.Error
-}
-
-// GetScriptsBySkill 获取 Skill 关联的脚本
-func (m *ScriptManager) GetScriptsBySkill(skillID string) ([]AgentScript, error) {
-	var scripts []AgentScript
-	err := m.db.Where("skill_id = ?", skillID).Order("created_at DESC").Find(&scripts).Error
-	return scripts, err
-}
-
-// RecordExecution 记录脚本执行
-func (m *ScriptManager) RecordExecution(scriptID string) {
-	now := time.Now()
-	m.db.Model(&AgentScript{}).Where("id = ?", scriptID).Updates(map[string]interface{}{
-		"exec_count":   gorm.Expr("exec_count + 1"),
-		"last_exec_at": now,
-	})
-}
-
-// generateBashScript 生成 bash 脚本骨架
-func (m *ScriptManager) generateBashScript(name, description, template string) string {
-	var sb strings.Builder
-	sb.WriteString("#!/bin/bash\n")
-	sb.WriteString(fmt.Sprintf("# %s - 自动生成脚本\n", name))
-	sb.WriteString(fmt.Sprintf("# %s\n", description))
-	sb.WriteString(fmt.Sprintf("# 生成时间: %s\n\n", time.Now().Format("2006-01-02 15:04:05")))
-	sb.WriteString("set -euo pipefail\n\n")
-	sb.WriteString("# ========================================\n")
-	sb.WriteString("# 用户配置区域\n")
-	sb.WriteString("# ========================================\n")
-	sb.WriteString("DB_HOST=\"${DB_HOST:-localhost}\"\n")
-	sb.WriteString("DB_PORT=\"${DB_PORT:-3306}\"\n")
-	sb.WriteString("DB_USER=\"${DB_USER:-root}\"\n")
-	sb.WriteString("DB_NAME=\"${DB_NAME:-opentether}\"\n\n")
-	sb.WriteString("# ========================================\n")
-	sb.WriteString("# 任务逻辑\n")
-	sb.WriteString("# ========================================\n")
-
-	// 从 prompt template 提取任务
-	if strings.Contains(template, "sql") || strings.Contains(template, "查询") || strings.Contains(template, "数据") {
-		sb.WriteString("# 数据查询任务\n")
-		sb.WriteString("echo \"[信息] 执行数据查询...\"\n")
-		sb.WriteString("mysql -h \"$DB_HOST\" -P \"$DB_PORT\" -u \"$DB_USER\" -D \"$DB_NAME\" -e \"SELECT '请在此处填入SQL查询'; \"\n")
-	} else if strings.Contains(template, "文件") || strings.Contains(template, "上传") || strings.Contains(template, "下载") {
-		sb.WriteString("# 文件处理任务\n")
-		sb.WriteString("echo \"[信息] 执行文件处理...\"\n")
-		sb.WriteString("INPUT_FILE=\"${1:-/tmp/input.csv}\"\n")
-		sb.WriteString("OUTPUT_FILE=\"${2:-/tmp/output.csv}\"\n")
-		sb.WriteString("echo \"输入: $INPUT_FILE\"\n")
-		sb.WriteString("echo \"输出: $OUTPUT_FILE\"\n")
-	} else {
-		sb.WriteString("# 通用任务\n")
-		sb.WriteString(fmt.Sprintf("echo \"[信息] 执行: %s\"\n\n", name))
-		sb.WriteString("# 初始化\n")
-		sb.WriteString("echo \"[OK] 环境准备完成\"\n")
-	}
-
-	sb.WriteString("\n# ========================================\n")
-	sb.WriteString("# 完成\n")
-	sb.WriteString("# ========================================\n")
-	sb.WriteString("echo \"[完成] 脚本执行结束\"\n")
-	sb.WriteString("exit 0\n")
-	return sb.String()
-}
-
-// generatePythonScript 生成 python 脚本骨架
-func (m *ScriptManager) generatePythonScript(name, description, template string) string {
-	var sb strings.Builder
-	sb.WriteString("#!/usr/bin/env python3\n")
-	sb.WriteString(fmt.Sprintf("\"\"\"%s - 自动生成脚本\"\"\"\n", name))
-	sb.WriteString("import os\nimport sys\nimport json\n\n")
-	sb.WriteString("def main():\n")
-	sb.WriteString(fmt.Sprintf("    \"\"\"%s\"\"\"\n", description))
-	sb.WriteString("    print(\"[信息] 执行任务...\")\n")
-
-	if strings.Contains(template, "sql") || strings.Contains(template, "查询") {
-		sb.WriteString("    # TODO: 实现数据库查询逻辑\n")
-	}
-	sb.WriteString("    print(\"[完成] 脚本执行结束\")\n\n")
-	sb.WriteString("if __name__ == \"__main__\":\n    main()\n")
-	return sb.String()
-}
-
-func scriptExt(lang string) string {
-	if lang == "bash" {
-		return "sh"
-	}
-	return "py"
-}
-
-func truncateStr(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "..."
+func (m *LettaMemory) InjectMemoryIntoPrompt(userID string, groupIDs []string) string {
+	return m.BuildSoulPrompt(userID, groupIDs, "", "")
 }

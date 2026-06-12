@@ -36,9 +36,11 @@ func (e *AgentEngine) executeParallelCalls(ctx context.Context, user *UserContex
 	// 边界检查 + 去重
 	uniqueCalls := make([]ParallelCall, 0, len(calls))
 	seen := make(map[string]bool)
-	for _, call := range calls {
+	deferredPermChecks := make([]int, 0) // 记录被拒绝的调用索引，用于跳过
+	for i, call := range calls {
 		if !toolNames[call.ToolName] {
 			log.Printf("[Parallel] 拒绝未授权工具: %s", call.ToolName)
+			deferredPermChecks = append(deferredPermChecks, i)
 			continue
 		}
 		key := call.ToolName + "_" + fmt.Sprintf("%v", call.ToolInput)
@@ -48,35 +50,31 @@ func (e *AgentEngine) executeParallelCalls(ctx context.Context, user *UserContex
 		seen[key] = true
 		uniqueCalls = append(uniqueCalls, call)
 	}
+	_ = deferredPermChecks // 权限检查已执行，拒绝的调用已跳过
 
-	resultCh := make(chan ParallelResult, len(uniqueCalls))
-	var wg sync.WaitGroup
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		results = make([]ParallelResult, len(uniqueCalls))
+	)
 
 	for i, call := range uniqueCalls {
 		wg.Add(1)
 		go func(idx int, c ParallelCall) {
 			defer wg.Done()
 			output, err := e.executeTool(ctx, user, c.ToolName, c.ToolInput)
-			resultCh <- ParallelResult{
+			mu.Lock()
+			results[idx] = ParallelResult{
 				Index:    idx,
 				ToolName: c.ToolName,
 				Output:   output,
 				Error:    err,
 			}
+			mu.Unlock()
 		}(i, call)
 	}
 
-	// 等待所有完成
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
-
-	// 收集结果（保持顺序）
-	results := make([]ParallelResult, len(uniqueCalls))
-	for r := range resultCh {
-		results[r.Index] = r
-	}
+	wg.Wait()
 
 	// 转换为 LoopStep
 	steps := make([]LoopStep, len(uniqueCalls))

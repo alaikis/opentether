@@ -1,9 +1,13 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"time"
@@ -123,10 +127,10 @@ func (s *Scheduler) scheduleTask(task models.ScheduledTask) error {
 
 	// Add job to cron
 	entryID, err := s.cron.AddJob(task.CronExpression, &taskRunner{
-		taskID:    task.ID,
-		taskName:  task.Name,
-		db:        s.db,
-		executor:  executor,
+		taskID:     task.ID,
+		taskName:   task.Name,
+		db:         s.db,
+		executor:   executor,
 		parameters: task.Parameters,
 	})
 	if err != nil {
@@ -200,10 +204,10 @@ func (s *Scheduler) RunTaskNow(taskID string) error {
 	// Run asynchronously
 	go func() {
 		runner := &taskRunner{
-			taskID:    task.ID,
-			taskName:  task.Name,
-			db:        s.db,
-			executor:  executor,
+			taskID:     task.ID,
+			taskName:   task.Name,
+			db:         s.db,
+			executor:   executor,
 			parameters: task.Parameters,
 		}
 		runner.run()
@@ -214,10 +218,10 @@ func (s *Scheduler) RunTaskNow(taskID string) error {
 
 // taskRunner wraps a task for execution in cron
 type taskRunner struct {
-	taskID    string
-	taskName  string
-	db        *gorm.DB
-	executor  Executor
+	taskID     string
+	taskName   string
+	db         *gorm.DB
+	executor   Executor
 	parameters string
 }
 
@@ -323,12 +327,67 @@ func (e *PythonExecutor) Execute(ctx context.Context, params map[string]interfac
 	return string(output), nil
 }
 
+// APIConfig API 任务配置结构
+type APIConfig struct {
+	URL     string            `json:"url"`
+	Method  string            `json:"method"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
 // APIExecutor calls HTTP APIs
 type APIExecutor struct {
 	content string
 }
 
 func (e *APIExecutor) Execute(ctx context.Context, params map[string]interface{}) (string, error) {
-	// TODO: Implement HTTP API calling
-	return "API executor not fully implemented", nil
+	var cfg APIConfig
+	if err := json.Unmarshal([]byte(e.content), &cfg); err != nil {
+		return "", fmt.Errorf("解析 API 配置失败: %w", err)
+	}
+
+	if cfg.URL == "" {
+		return "", fmt.Errorf("API 配置缺少 url 字段")
+	}
+
+	// 默认方法
+	if cfg.Method == "" {
+		cfg.Method = "GET"
+	}
+
+	var reqBody io.Reader
+	if cfg.Body != "" {
+		reqBody = bytes.NewBufferString(cfg.Body)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, reqBody)
+	if err != nil {
+		return "", fmt.Errorf("创建 HTTP 请求失败: %w", err)
+	}
+
+	// 设置请求头
+	for k, v := range cfg.Headers {
+		httpReq.Header.Set(k, v)
+	}
+	if _, ok := cfg.Headers["Content-Type"]; !ok && cfg.Body != "" {
+		httpReq.Header.Set("Content-Type", "application/json")
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return string(body), fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
 }

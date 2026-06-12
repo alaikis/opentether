@@ -1,12 +1,16 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/smtp"
 	"strings"
 
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/im"
+	"github.com/alaikis/opentether/internal/llm"
+	"github.com/alaikis/opentether/internal/middleware"
+	"github.com/alaikis/opentether/internal/models"
 	"github.com/alaikis/opentether/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -100,12 +104,22 @@ func (h *Handler) AuthLogin(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
 	}
 
-	token, err := h.services.Auth.Login(req.Username, req.Password)
+	token, user, err := h.services.Auth.Login(req.Username, req.Password)
 	if err != nil {
 		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.JSON(fiber.Map{"token": token, "refresh_token": token})
+	return c.JSON(fiber.Map{
+		"token":         token,
+		"refresh_token": token,
+		"user": fiber.Map{
+			"id":       user.ID,
+			"username": user.GlobalUserID,
+			"name":     user.Name,
+			"email":    user.Email,
+			"role":     user.Role,
+		},
+	})
 }
 
 // AuthRefresh handles token refresh requests
@@ -126,12 +140,21 @@ func (h *Handler) AuthRefresh(c *fiber.Ctx) error {
 		refreshToken = req.Token
 	}
 
-	token, err := h.services.Auth.RefreshToken(refreshToken)
+	token, user, err := h.services.Auth.RefreshToken(refreshToken)
 	if err != nil {
 		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.JSON(fiber.Map{"token": token})
+	return c.JSON(fiber.Map{
+		"token": token,
+		"user": fiber.Map{
+			"id":       user.ID,
+			"username": user.GlobalUserID,
+			"name":     user.Name,
+			"email":    user.Email,
+			"role":     user.Role,
+		},
+	})
 }
 
 // User handlers
@@ -308,6 +331,41 @@ func (h *Handler) TestProvider(c *fiber.Ctx) error {
 	return c.JSON(result)
 }
 
+// TestProviderConnection 直接测试 LLM Provider 连接（使用提供的凭据）
+func (h *Handler) TestProviderConnection(c *fiber.Ctx) error {
+	type ProvTest struct {
+		ProviderType string `json:"provider_type"`
+		APIBase      string `json:"api_base"`
+		APIKey       string `json:"api_key"`
+		Model        string `json:"model"`
+	}
+	var req ProvTest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	// 调用 llm.ChatWithProvider 测试连通性
+	provider := &models.Provider{
+		ProviderType: req.ProviderType,
+		APIBase:      req.APIBase,
+		APIKey:       req.APIKey,
+		Model:        req.Model,
+	}
+	resp, err := llm.ChatWithProvider(provider, llm.ChatRequest{
+		Model:       req.Model,
+		Messages:    []llm.Message{{Role: "user", Content: "ping"}},
+		MaxTokens:   5,
+		Temperature: 0,
+	})
+	if err != nil {
+		return c.JSON(fiber.Map{"success": false, "message": fmt.Sprintf("连接失败: %v", err)})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": fmt.Sprintf("连接成功 (模型: %s, tokens: %d)", resp.Model, resp.Usage.TotalTokens),
+	})
+}
+
 // DataSource handlers
 func (h *Handler) ListDataSources(c *fiber.Ctx) error {
 	ds, err := h.services.DataSource.List()
@@ -361,6 +419,28 @@ func (h *Handler) TestDataSource(c *fiber.Ctx) error {
 	return c.JSON(result)
 }
 
+// TestDataSourceConnection 直接测试数据库连接（使用提供的凭据，不需要已有数据源）
+func (h *Handler) TestDataSourceConnection(c *fiber.Ctx) error {
+	type ConnTest struct {
+		SourceType string `json:"source_type"`
+		Host       string `json:"host"`
+		Port       int    `json:"port"`
+		User       string `json:"user"`
+		Password   string `json:"password"`
+		Database   string `json:"database"`
+	}
+	var req ConnTest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	result, err := h.services.DataSource.TestConnection(req.SourceType, req.Host, req.Port, req.User, req.Password, req.Database)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(result)
+}
+
 func (h *Handler) AnalyzeDataSource(c *fiber.Ctx) error {
 	id := c.Params("id")
 	result, err := h.services.DataSource.Analyze(id)
@@ -368,6 +448,25 @@ func (h *Handler) AnalyzeDataSource(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(result)
+}
+
+// UpdateTableRelations 手动更新数据源表关系
+func (h *Handler) UpdateTableRelations(c *fiber.Ctx) error {
+	id := c.Params("id")
+	type RelationsInput struct {
+		TableRelations string `json:"table_relations"`
+	}
+	var input RelationsInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	if err := h.services.DataSource.UpdateTableRelations(id, input.TableRelations); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "update", "datasource", id, "更新表关系")
+	return c.JSON(fiber.Map{"success": true, "table_relations": input.TableRelations})
 }
 
 // Skill handlers
@@ -401,6 +500,9 @@ func (h *Handler) UpdateSkill(c *fiber.Ctx) error {
 
 	result, err := h.services.Skill.Update(id, skill)
 	if err != nil {
+		if errors.Is(err, service.ErrBuiltinSkillProtected) {
+			return c.Status(403).JSON(fiber.Map{"error": err.Error()})
+		}
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(result)
@@ -409,6 +511,9 @@ func (h *Handler) UpdateSkill(c *fiber.Ctx) error {
 func (h *Handler) DeleteSkill(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if err := h.services.Skill.Delete(id); err != nil {
+		if errors.Is(err, service.ErrBuiltinSkillProtected) {
+			return c.Status(403).JSON(fiber.Map{"error": err.Error()})
+		}
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.SendStatus(204)
@@ -437,6 +542,70 @@ func (h *Handler) SyncSkillVector(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
+}
+
+// GenerateSkillWithAI AI 辅助生成 Skill 配置
+func (h *Handler) GenerateSkillWithAI(c *fiber.Ctx) error {
+	type GenInput struct {
+		Description string `json:"description"`
+		SourceType  string `json:"source_type"`
+		TableNames  string `json:"table_names"`
+	}
+	var input GenInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	result, err := h.services.Skill.GenerateSkillWithAI(input.Description, input.SourceType, input.TableNames)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(result)
+}
+
+// GenerateText2SQLRelations AI 分析选中表间关系和字段含义
+func (h *Handler) GenerateText2SQLRelations(c *fiber.Ctx) error {
+	type Request struct {
+		DataSourceID string                   `json:"data_source_id"`
+		Tables       []map[string]interface{} `json:"tables"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	result, err := h.services.Skill.GenerateText2SQLRelations(req.DataSourceID, req.Tables)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(result)
+}
+
+// GenerateText2SQLRelationsStream SSE 流式返回 AI 分析进度和发现的关系
+func (h *Handler) GenerateText2SQLRelationsStream(c *fiber.Ctx) error {
+	type Request struct {
+		DataSourceID string                   `json:"data_source_id"`
+		Tables       []map[string]interface{} `json:"tables"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	stream, err := h.services.Skill.GenerateText2SQLRelationsStream(req.DataSourceID, req.Tables)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+
+	for chunk := range stream {
+		if _, err := c.Write([]byte("data: " + chunk + "\n\n")); err != nil {
+			break
+		}
+	}
+	c.Write([]byte("data: [DONE]\n\n"))
+	return nil
 }
 
 // Task handlers
@@ -606,7 +775,7 @@ func (h *Handler) handleIMCallback(c *fiber.Ctx, platform string) error {
 	}
 
 	// 通过 Agent 处理消息
-	result, err := h.services.Agent.Chat(imCtx.UserID, imCtx.Message, "")
+	result, err := h.services.Agent.Chat(imCtx.UserID, imCtx.Message, "", "")
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -661,7 +830,7 @@ func (h *Handler) ILinkCallback(c *fiber.Ctx) error {
 	}
 
 	// 通过 Agent 处理消息
-	result, err := h.services.Agent.Chat(imCtx.UserID, imCtx.Message, "")
+	result, err := h.services.Agent.Chat(imCtx.UserID, imCtx.Message, "", "")
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -689,7 +858,9 @@ func (h *Handler) ListRequestLogs(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(logs)
+	// 从 details JSON 解析出 method/path/status/latency
+	entries := middleware.ParseRequestLogs(logs)
+	return c.JSON(entries)
 }
 
 func (h *Handler) ExportLogs(c *fiber.Ctx) error {
@@ -713,6 +884,7 @@ func (h *Handler) Chat(c *fiber.Ctx) error {
 	type ChatInput struct {
 		Message        string `json:"message"`
 		ConversationID string `json:"conversation_id"`
+		SkillID        string `json:"skill_id"`
 	}
 
 	var input ChatInput
@@ -723,7 +895,7 @@ func (h *Handler) Chat(c *fiber.Ctx) error {
 	// Get user ID from context (set by auth middleware)
 	userID := c.Locals("user_id").(string)
 
-	result, err := h.services.Agent.Chat(userID, input.Message, input.ConversationID)
+	result, err := h.services.Agent.Chat(userID, input.Message, input.ConversationID, input.SkillID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -734,6 +906,7 @@ func (h *Handler) ChatStream(c *fiber.Ctx) error {
 	type ChatInput struct {
 		Message        string `json:"message"`
 		ConversationID string `json:"conversation_id"`
+		SkillID        string `json:"skill_id"`
 	}
 
 	var input ChatInput
@@ -745,7 +918,7 @@ func (h *Handler) ChatStream(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
 
 	// Get streaming response channel
-	stream, err := h.services.Agent.ChatStream(userID, input.Message, input.ConversationID)
+	stream, err := h.services.Agent.ChatStream(userID, input.Message, input.ConversationID, input.SkillID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -770,25 +943,197 @@ func (h *Handler) ChatStream(c *fiber.Ctx) error {
 	return nil
 }
 
+// ListRuntimeJobs 列出当前用户的运行时任务
+func (h *Handler) ListRuntimeJobs(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	status := c.Query("status", "")
+	limit := c.QueryInt("limit", 50)
+	jobs, err := h.services.Agent.ListRuntimeJobs(userID, status, limit)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"jobs": jobs})
+}
+
+// GetRuntimeJob 获取运行时任务详情和 checkpoints
+func (h *Handler) GetRuntimeJob(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	jobID := c.Params("id")
+	job, checkpoints, err := h.services.Agent.GetRuntimeJob(userID, jobID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"job": job, "checkpoints": checkpoints})
+}
+
+// CancelRuntimeJob 取消运行时任务
+func (h *Handler) CancelRuntimeJob(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	jobID := c.Params("id")
+	if err := h.services.Agent.CancelRuntimeJob(userID, jobID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// RetryRuntimeJob 从原始输入重试/恢复运行时任务
+func (h *Handler) RetryRuntimeJob(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	jobID := c.Params("id")
+	result, err := h.services.Agent.RetryRuntimeJob(userID, jobID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(result)
+}
+
+// ListConversations 列出当前用户的对话
 func (h *Handler) ListConversations(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
-	convs, err := h.services.Conversation.List(userID)
+	source := c.Query("source", "") // web, im, api; 空=不过滤
+	convs, err := h.services.Conversation.List(userID, source)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(convs)
 }
 
+// GetConversation 获取单个对话详情
 func (h *Handler) GetConversation(c *fiber.Ctx) error {
 	id := c.Params("id")
-	conv, err := h.services.Conversation.Get(id)
+	userID := c.Locals("user_id").(string)
+	conv, err := h.services.Conversation.Get(id, userID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return c.Status(404).JSON(fiber.Map{"error": "not found"})
-		}
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(404).JSON(fiber.Map{"error": "对话不存在"})
 	}
 	return c.JSON(conv)
+}
+
+// DeleteConversation 删除对话
+func (h *Handler) DeleteConversation(c *fiber.Ctx) error {
+	id := c.Params("id")
+	userID := c.Locals("user_id").(string)
+	if err := h.services.Conversation.Delete(id, userID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(204)
+}
+
+// ListRouteExamples 列出 FastPath 路由样本
+func (h *Handler) ListRouteExamples(c *fiber.Ctx) error {
+	status := c.Query("status", "")
+	limit := c.QueryInt("limit", 100)
+	examples, err := h.services.Skill.ListRouteExamples(status, limit)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"examples": examples})
+}
+
+// CreateRouteExample 创建管理员确认的路由样本
+func (h *Handler) CreateRouteExample(c *fiber.Ctx) error {
+	type Request struct {
+		Text       string  `json:"text"`
+		Route      string  `json:"route"`
+		Intent     string  `json:"intent"`
+		Confidence float64 `json:"confidence"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	ex, err := h.services.Skill.CreateRouteExample(req.Text, req.Route, req.Intent, req.Confidence)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "create", "route_example", ex.ID, "创建 FastPath 路由样本")
+	return c.JSON(ex)
+}
+
+// ReviewRouteExample 审核 FastPath 路由样本
+func (h *Handler) ReviewRouteExample(c *fiber.Ctx) error {
+	id := c.Params("id")
+	type Request struct {
+		Action string `json:"action"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	ex, err := h.services.Skill.ReviewRouteExample(id, req.Action)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "review", "route_example", id, "审核 FastPath 路由样本")
+	return c.JSON(ex)
+}
+
+// ListSkillRuntimeMemories 列出 Skill 运行时学习记忆，用于管理员审核
+func (h *Handler) ListSkillRuntimeMemories(c *fiber.Ctx) error {
+	status := c.Query("status", "")
+	limit := c.QueryInt("limit", 100)
+	memories, err := h.services.Skill.ListRuntimeMemories(status, limit)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"memories": memories})
+}
+
+// ReviewSkillRuntimeMemory 审核运行时学习记忆
+func (h *Handler) ReviewSkillRuntimeMemory(c *fiber.Ctx) error {
+	id := c.Params("id")
+	type Request struct {
+		Action  string `json:"action"`
+		Content string `json:"content"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	mem, err := h.services.Skill.ReviewRuntimeMemory(id, req.Action, req.Content)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "review", "skill_runtime_memory", id, "审核 Skill 运行时学习")
+	return c.JSON(mem)
+}
+
+// DeleteSkillRuntimeMemory 删除运行时学习记忆
+func (h *Handler) DeleteSkillRuntimeMemory(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if err := h.services.Skill.DeleteRuntimeMemory(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(204)
+}
+
+// GetSkillContextMD 获取 Skill 上下文 MD 文档
+func (h *Handler) GetSkillContextMD(c *fiber.Ctx) error {
+	id := c.Params("id")
+	result, err := h.services.Skill.GetContextMD(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(result)
+}
+
+// UpdateSkillContextMD 更新 Skill 上下文 MD 文档，保存到统一对象存储
+func (h *Handler) UpdateSkillContextMD(c *fiber.Ctx) error {
+	id := c.Params("id")
+	type Request struct {
+		Content string `json:"content"`
+		Publish bool   `json:"publish"`
+	}
+	var req Request
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	result, err := h.services.Skill.UpdateContextMD(id, req.Content, req.Publish)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "update", "skill_context_md", id, "更新 Skill 上下文 MD")
+	return c.JSON(result)
 }
 
 // ============================================
@@ -1340,8 +1685,9 @@ func (h *Handler) GetSystemConfig(c *fiber.Ctx) error {
 		"executor": fiber.Map{
 			"mode": h.config.Executor.Mode,
 			"embedded": fiber.Map{
-				"max_concurrent": h.config.Executor.EmbeddedConfig.MaxConcurrent,
-				"timeout":        h.config.Executor.EmbeddedConfig.Timeout,
+				"max_concurrent":      h.config.Executor.EmbeddedConfig.MaxConcurrent,
+				"max_loop_iterations": h.config.Executor.EmbeddedConfig.MaxLoopIterations,
+				"timeout":             h.config.Executor.EmbeddedConfig.Timeout,
 			},
 			"independent": fiber.Map{
 				"queue": fiber.Map{
@@ -1368,6 +1714,22 @@ func (h *Handler) GetSystemConfig(c *fiber.Ctx) error {
 			"from_name":  h.config.SMTP.FromName,
 			"to_email":   h.config.SMTP.ToEmail,
 		},
+		"storage": fiber.Map{
+			"type": h.config.Storage.Type,
+			"local": fiber.Map{
+				"path":     h.config.Storage.Local.Path,
+				"base_url": h.config.Storage.Local.BaseURL,
+			},
+			"s3": fiber.Map{
+				"endpoint":   h.config.Storage.S3.Endpoint,
+				"region":     h.config.Storage.S3.Region,
+				"access_key": h.config.Storage.S3.AccessKey,
+				"secret_key": "",
+				"bucket":     h.config.Storage.S3.Bucket,
+				"use_ssl":    h.config.Storage.S3.UseSSL,
+				"path_style": h.config.Storage.S3.PathStyle,
+			},
+		},
 	})
 }
 
@@ -1378,6 +1740,7 @@ func (h *Handler) GetSystemConfig(c *fiber.Ctx) error {
 // ExternalBindIM 外部系统通过 API Key 代员工绑定 IM
 func (h *Handler) ExternalBindIM(c *fiber.Ctx) error {
 	type ExternalBindInput struct {
+		CompanyID    string `json:"company_id"`
 		GlobalUserID string `json:"global_user_id"`
 		UserName     string `json:"user_name"`
 		ImConfigID   string `json:"im_config_id"`
@@ -1389,7 +1752,7 @@ func (h *Handler) ExternalBindIM(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
 	}
 
-	result, err := h.services.IM.ExternalBindUser(input.GlobalUserID, input.UserName, input.ImConfigID, input.ImUserID, input.ImUserName)
+	result, err := h.services.IM.ExternalBindUser(input.CompanyID, input.GlobalUserID, input.UserName, input.ImConfigID, input.ImUserID, input.ImUserName)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -1456,8 +1819,9 @@ func (h *Handler) UpdateSystemConfig(c *fiber.Ctx) error {
 		Executor *struct {
 			Mode     string `json:"mode"`
 			Embedded *struct {
-				MaxConcurrent int    `json:"max_concurrent"`
-				Timeout       string `json:"timeout"`
+				MaxConcurrent     int    `json:"max_concurrent"`
+				MaxLoopIterations *int   `json:"max_loop_iterations"`
+				Timeout           string `json:"timeout"`
 			} `json:"embedded"`
 			Independent *struct {
 				Queue *struct {
@@ -1628,6 +1992,10 @@ func (h *Handler) UpdateSystemConfig(c *fiber.Ctx) error {
 				h.config.Executor.EmbeddedConfig.MaxConcurrent = e.Embedded.MaxConcurrent
 				changed = true
 			}
+			if e.Embedded.MaxLoopIterations != nil {
+				h.config.Executor.EmbeddedConfig.MaxLoopIterations = *e.Embedded.MaxLoopIterations
+				changed = true
+			}
 			if e.Embedded.Timeout != "" {
 				h.config.Executor.EmbeddedConfig.Timeout = e.Embedded.Timeout
 				changed = true
@@ -1777,4 +2145,111 @@ func sendTestEmail(cfg config.SMTPConfig, subject, body string) error {
 	}
 
 	return nil
+}
+
+// ============================================
+// Experience Handlers - 经验管理
+// ============================================
+
+// ListExperiences 列出经验（支持 status/scope 筛选）
+func (h *Handler) ListExperiences(c *fiber.Ctx) error {
+	status := c.Query("status")
+	scope := c.Query("scope")
+	experiences, err := h.services.Experience.List(status, scope)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(experiences)
+}
+
+// GetExperience 获取单个经验详情
+func (h *Handler) GetExperience(c *fiber.Ctx) error {
+	id := c.Params("id")
+	exp, err := h.services.Experience.GetByID(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "经验不存在"})
+	}
+	return c.JSON(exp)
+}
+
+// ReviewExperience 审核经验（通过/拒绝）
+func (h *Handler) ReviewExperience(c *fiber.Ctx) error {
+	id := c.Params("id")
+	type ReviewInput struct {
+		Status string `json:"status"` // active, rejected
+		Note   string `json:"note"`
+	}
+	var input ReviewInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	reviewerID := c.Locals("user_id").(string)
+	if err := h.services.Experience.Review(id, reviewerID, input.Status, input.Note); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "review", "experience", id, "审核经验: "+input.Status)
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// PromoteExperience 将个人经验升级为全局
+func (h *Handler) PromoteExperience(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if err := h.services.Experience.PromoteToGlobal(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "promote", "experience", id, "升级为全局经验")
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// DeleteExperience 删除经验
+func (h *Handler) DeleteExperience(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if err := h.services.Experience.Delete(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(204)
+}
+
+// ============ SQL 审计 ============
+
+// ListSQLAudits 列出 SQL 审计记录
+func (h *Handler) ListSQLAudits(c *fiber.Ctx) error {
+	status := c.Query("status", "")
+	audits, err := h.services.SQLAudit.ListAll(status)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(audits)
+}
+
+// ApproveSQLAudit 审批通过
+func (h *Handler) ApproveSQLAudit(c *fiber.Ctx) error {
+	id := c.Params("id")
+	userID := c.Locals("user_id").(string)
+	if err := h.services.SQLAudit.Approve(id, userID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "approve", "sql_audit", id, "审批通过 SQL")
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// RejectSQLAudit 拒绝
+func (h *Handler) RejectSQLAudit(c *fiber.Ctx) error {
+	id := c.Params("id")
+	userID := c.Locals("user_id").(string)
+	type RejectInput struct {
+		Reason string `json:"reason"`
+	}
+	var input RejectInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := h.services.SQLAudit.Reject(id, userID, input.Reason); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "reject", "sql_audit", id, "拒绝 SQL")
+	return c.JSON(fiber.Map{"success": true})
 }
