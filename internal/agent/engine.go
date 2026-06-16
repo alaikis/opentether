@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +64,14 @@ func (e *AgentEngine) SetSQLAuditor(auditor text2sql.AuditRecorder) {
 // SetMCPProvider 设置 MCP 工具提供器。
 func (e *AgentEngine) SetMCPProvider(provider MCPToolProvider) {
 	e.mcpProvider = provider
+}
+
+// ReloadFastPathClassifier forces an immediate reload of the fast-path route classifier.
+func (e *AgentEngine) ReloadFastPathClassifier() {
+	if e != nil && e.fastClassifier != nil {
+		e.fastClassifier.Reload()
+		log.Printf("[FastPath] Classifier reloaded")
+	}
 }
 
 type ChatRequest struct {
@@ -732,16 +742,50 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 	}
 
 	boundaryRules := parseDataBoundaryRulesFromUserContext(user)
+	userCtx := buildBoundaryUserContext(user)
+
+	// 安全语义上下文（query_plan 模式）
+	var secureCtx *text2sql.SecureSemanticContext
+	var perms []text2sql.DataPermission
+	if skillConfig, ok := user.Context["selected_skill_config"].(string); ok && skillConfig != "" {
+		var secureErr error
+		secureCtx, secureErr = text2sql.BuildSecureSemanticContext(skillConfig, userCtx)
+		if secureErr != nil {
+			return &ChatResponse{
+				Message: fmt.Sprintf("权限校验失败: %v", secureErr),
+				Data:    map[string]interface{}{"type": "text2sql", "error": secureErr.Error()},
+			}, nil
+		}
+		// 解析数据权限（根据 Skill 的 data_scope 和用户属性）
+		if secureCtx != nil && secureCtx.Enabled {
+			var cfg map[string]interface{}
+			if json.Unmarshal([]byte(skillConfig), &cfg) == nil {
+				scope, _ := cfg["data_scope"].(string)
+				if scope == "" {
+					scope = "self"
+				}
+				if hasConfiguredFullDataAccess(user, cfg) {
+					scope = "all"
+				}
+				// 确定主实体：优先从 entry_table / from 推断
+				mainEntity := deduceMainEntity(cfg, secureCtx.Model)
+				perms, _ = text2sql.ResolveUserPermissions(userCtx, scope, secureCtx.Model, mainEntity)
+			}
+		}
+	}
+
 	// 执行查询
 	req := &text2sql.QueryRequest{
-		Question:          message,
-		DataSourceID:      dataSourceID,
-		SchemaContext:     schemaContext,
-		UserID:            user.UserID,
-		SkillID:           skillID,
-		IsAdmin:           isAdmin,
-		DataBoundaryRules: boundaryRules,
-		UserContext:       buildBoundaryUserContext(user),
+		Question:              message,
+		DataSourceID:          dataSourceID,
+		SchemaContext:         schemaContext,
+		UserID:                user.UserID,
+		SkillID:               skillID,
+		IsAdmin:               isAdmin,
+		DataBoundaryRules:     boundaryRules,
+		UserContext:           userCtx,
+		SecureSemanticContext: secureCtx,
+		Permissions:           perms,
 	}
 
 	result, err := t2s.ExecuteSQL(context.Background(), req)
@@ -796,23 +840,19 @@ func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatR
 		}
 	}
 
-	// 如果没有指定，尝试查找相关数据源
+	// 如果没有指定，尝试获取第一个启用的数据源
 	if dataSourceID == "" {
 		var ds models.DataSource
-		err := e.db.Where("enabled = ? AND (name LIKE ? OR name LIKE ?)", true, "%hr%", "%员工%").First(&ds).Error
+		err := e.db.Where("enabled = ?", true).First(&ds).Error
 		if err != nil {
-			// 尝试获取第一个启用的数据源
-			err = e.db.Where("enabled = ?", true).First(&ds).Error
-			if err != nil {
-				return &ChatResponse{
-					Message: "请先在管理后台配置员工数据源后再使用员工查询功能",
-					Data: map[string]interface{}{
-						"type":    "employee",
-						"action":  "configure_datasource",
-						"message": "未配置员工数据源，请先在数据源管理中添加数据库连接",
-					},
-				}, nil
-			}
+			return &ChatResponse{
+				Message: "请先在管理后台配置数据源后再使用查询功能",
+				Data: map[string]interface{}{
+					"type":    "query",
+					"action":  "configure_datasource",
+					"message": "未配置数据源，请先在数据源管理中添加数据库连接",
+				},
+			}, nil
 		}
 		dataSourceID = ds.ID
 	}
@@ -938,7 +978,10 @@ func formatQueryResult(result *text2sql.QueryResult) string {
 	var output string
 	output += fmt.Sprintf("查询完成，共找到 %d 条记录\n\n", result.RowCount)
 
-	// 显示前10条
+	if isTrendQuery(result.Columns) && result.RowCount > 0 {
+		return formatTrendResult(result.Columns, result.Rows)
+	}
+
 	maxRows := result.RowCount
 	if maxRows > 10 {
 		maxRows = 10
@@ -954,6 +997,106 @@ func formatQueryResult(result *text2sql.QueryResult) string {
 	}
 
 	return output
+}
+
+func isTrendQuery(headers []string) bool {
+	for _, h := range headers {
+		if strings.EqualFold(h, "month") || strings.EqualFold(h, "月份") || strings.EqualFold(h, "月份") {
+			return true
+		}
+	}
+	return false
+}
+
+func formatTrendResult(headers []string, rows [][]interface{}) string {
+	if len(rows) == 0 || len(headers) < 2 {
+		return ""
+	}
+	labelIdx := 0
+	for i, h := range headers {
+		if strings.EqualFold(h, "month") || strings.EqualFold(h, "月份") {
+			labelIdx = i
+			break
+		}
+	}
+	labels := make([]string, 0, len(rows))
+	for _, row := range rows {
+		labels = append(labels, fmt.Sprint(row[labelIdx]))
+	}
+	series := map[string][]float64{}
+	seriesOrder := []string{}
+	for colIdx, h := range headers {
+		if colIdx == labelIdx {
+			continue
+		}
+		values := make([]float64, 0, len(rows))
+		valid := true
+		for _, row := range rows {
+			v, err := toFloat64(row[colIdx])
+			if err != nil {
+				valid = false
+				break
+			}
+			values = append(values, v)
+		}
+		if valid {
+			label := humanMetricLabel(h)
+			series[label] = values
+			seriesOrder = append(seriesOrder, label)
+		}
+	}
+	var table strings.Builder
+	table.WriteString("趋势图表：\n\n")
+	table.WriteString(fmt.Sprintf("图表类型：bar\n"))
+	table.WriteString(fmt.Sprintf("月份：%s\n", strings.Join(labels, ", ")))
+	for _, name := range seriesOrder {
+		table.WriteString(fmt.Sprintf("%s：%v\n", name, series[name]))
+	}
+	table.WriteString("\n明细：\n")
+	for i := range labels {
+		parts := make([]string, 0, len(seriesOrder))
+		for _, name := range seriesOrder {
+			parts = append(parts, fmt.Sprintf("%s %.2f", name, series[name][i]))
+		}
+		table.WriteString(fmt.Sprintf("- %s：%s\n", labels[i], strings.Join(parts, "，")))
+	}
+	return table.String()
+}
+
+func humanMetricLabel(header string) string {
+	lower := strings.ToLower(header)
+	if strings.Contains(lower, "count") || strings.Contains(header, "单") {
+		return "订单数"
+	}
+	if strings.Contains(lower, "profit") || strings.Contains(header, "利润") {
+		return "利润"
+	}
+	if strings.Contains(lower, "cost") || strings.Contains(header, "成本") {
+		return "成本"
+	}
+	if strings.Contains(lower, "sales") || strings.Contains(lower, "amount") || strings.Contains(header, "销售") || strings.Contains(header, "金额") {
+		return "销售额"
+	}
+	return header
+}
+
+func toFloat64(value interface{}) (float64, error) {
+	switch v := value.(type) {
+	case int64:
+		return float64(v), nil
+	case int:
+		return float64(v), nil
+	case float64:
+		return v, nil
+	case float32:
+		return float64(v), nil
+	case []byte:
+		return strconv.ParseFloat(string(v), 64)
+	case string:
+		return strconv.ParseFloat(v, 64)
+	default:
+		return strconv.ParseFloat(fmt.Sprint(v), 64)
+	}
 }
 
 func parseDataBoundaryRulesFromUserContext(user *UserContext) []text2sql.DataBoundaryRule {
@@ -973,6 +1116,86 @@ func parseDataBoundaryRulesFromUserContext(user *UserContext) []text2sql.DataBou
 	return cfg.Rules
 }
 
+// deduceMainEntity 从 Skill 配置和语义模型中推断主业务实体名称。
+func deduceMainEntity(cfg map[string]interface{}, model text2sql.SemanticModel) string {
+	// 优先用 entry_table
+	if entry, ok := cfg["entry_table"].(string); ok && entry != "" {
+		for _, ent := range model.Entities {
+			if ent.Table == entry || ent.Name == entry {
+				return ent.Name
+			}
+		}
+	}
+	// 否则用第一个实体的名称
+	if len(model.Entities) > 0 {
+		return model.Entities[0].Name
+	}
+	return ""
+}
+
+func hasConfiguredFullDataAccess(user *UserContext, cfg map[string]interface{}) bool {
+	if user == nil {
+		return false
+	}
+	if strings.EqualFold(user.Role, "admin") {
+		return true
+	}
+	allowed := stringSliceFromConfig(cfg["full_access_groups"])
+	if len(allowed) == 0 {
+		allowed = stringSliceFromConfig(cfg["allowed_all_scope_groups"])
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, group := range user.Groups {
+		for _, value := range []string{group.ID, group.Code, group.Name} {
+			if containsInList(allowed, value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringSliceFromConfig(value interface{}) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		items := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
+				items = append(items, s)
+			}
+		}
+		return items
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		parts := strings.Split(v, ",")
+		items := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if s := strings.TrimSpace(part); s != "" {
+				items = append(items, s)
+			}
+		}
+		return items
+	default:
+		return nil
+	}
+}
+
+func containsInList(items []string, value string) bool {
+	value = strings.TrimSpace(value)
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildBoundaryUserContext(user *UserContext) map[string]interface{} {
 	ctx := map[string]interface{}{}
 	if user == nil {
@@ -980,7 +1203,11 @@ func buildBoundaryUserContext(user *UserContext) map[string]interface{} {
 	}
 	ctx["user_id"] = user.UserID
 	ctx["global_user_id"] = user.GlobalUserID
-	ctx["company_user_id"] = user.GlobalUserID
+	if companyUserID, ok := user.Context["company_user_id"].(string); ok && companyUserID != "" {
+		ctx["company_user_id"] = companyUserID
+	} else {
+		ctx["company_user_id"] = user.GlobalUserID
+	}
 	ctx["name"] = user.Name
 	ctx["department"] = user.Department
 	ctx["role"] = user.Role
@@ -1743,11 +1970,6 @@ func (m *MemoryManager) SaveConversationMemory(userID, userQuery, assistantReply
 }
 
 func extractTopic(query string) string {
-	for _, kw := range []string{"订单", "销售", "库存", "员工", "成本", "客户", "采购", "报表", "产品", "利润", "业绩", "部门", "仓库", "物流", "广告"} {
-		if strings.Contains(query, kw) {
-			return kw
-		}
-	}
 	return ""
 }
 

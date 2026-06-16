@@ -24,23 +24,23 @@ const (
 )
 
 type User struct {
-	ID           string     `json:"id" gorm:"type:varchar(36);primaryKey"`
-	CompanyID    string     `json:"company_id" gorm:"type:varchar(100);index"`
+	ID                 string     `json:"id" gorm:"type:varchar(36);primaryKey"`
+	CompanyID          string     `json:"company_id" gorm:"type:varchar(100);index"`
 	GlobalUserID       string     `json:"global_user_id" gorm:"type:varchar(100);uniqueIndex;not null"`
 	ExternalEmployeeID string     `json:"external_employee_id" gorm:"type:varchar(100);index"` // 公司/外部系统员工识别号
 	Name               string     `json:"name" gorm:"type:varchar(255);not null"`
-	Email        string     `json:"email" gorm:"type:varchar(255);uniqueIndex"`
-	Department   string     `json:"department" gorm:"type:varchar(100)"`
-	Position     string     `json:"position" gorm:"type:varchar(100)"`
-	Role         string     `json:"role" gorm:"type:varchar(20);default:user"` // admin, user, guest
-	Permissions  string     `json:"permissions" gorm:"type:varchar(500)"`      // JSON: 权限列表
-	SSOID        string     `json:"sso_id" gorm:"type:varchar(100)"`
-	Status       string     `json:"status" gorm:"type:varchar(20);default:active"` // active, inactive, suspended
-	PasswordHash string     `json:"-" gorm:"type:varchar(255)"`
-	LastLoginAt  *time.Time `json:"last_login_at"`
-	CreatedBy    string     `json:"created_by" gorm:"type:varchar(36)"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	Email              string     `json:"email" gorm:"type:varchar(255);uniqueIndex"`
+	Department         string     `json:"department" gorm:"type:varchar(100)"`
+	Position           string     `json:"position" gorm:"type:varchar(100)"`
+	Role               string     `json:"role" gorm:"type:varchar(20);default:user"` // admin, user, guest
+	Permissions        string     `json:"permissions" gorm:"type:varchar(500)"`      // JSON: 权限列表
+	SSOID              string     `json:"sso_id" gorm:"type:varchar(100)"`
+	Status             string     `json:"status" gorm:"type:varchar(20);default:active"` // active, inactive, suspended
+	PasswordHash       string     `json:"-" gorm:"type:varchar(255)"`
+	LastLoginAt        *time.Time `json:"last_login_at"`
+	CreatedBy          string     `json:"created_by" gorm:"type:varchar(36)"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 
 	// Relations
 	Groups        []UserGroup    `json:"groups" gorm:"many2many:user_group_members;"`
@@ -222,6 +222,24 @@ type Skill struct {
 func (s *Skill) BeforeCreate(tx *gorm.DB) error {
 	if s.ID == "" {
 		s.ID = uuid.New().String()
+	}
+	return nil
+}
+
+type SkillConfigVersion struct {
+	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	SkillID   string    `json:"skill_id" gorm:"type:varchar(36);index;not null"`
+	Version   string    `json:"version" gorm:"type:varchar(32);index;not null"`
+	Config    string    `json:"config" gorm:"type:text;not null"`
+	Action    string    `json:"action" gorm:"type:varchar(50);index"`
+	ActorID   string    `json:"actor_id" gorm:"type:varchar(36);index"`
+	Note      string    `json:"note" gorm:"type:text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (v *SkillConfigVersion) BeforeCreate(tx *gorm.DB) error {
+	if v.ID == "" {
+		v.ID = uuid.New().String()
 	}
 	return nil
 }
@@ -725,6 +743,7 @@ type AgentExperience struct {
 	Status         string     `json:"status" gorm:"type:varchar(20);default:pending_review"`
 	UsageCount     int        `json:"usage_count" gorm:"default:0"`
 	SuccessCount   int        `json:"success_count" gorm:"default:0"`
+	FailCount      int        `json:"fail_count" gorm:"default:0"` // 连续失败次数
 	AvgTokensSaved int        `json:"avg_tokens_saved" gorm:"default:0"`
 	CreatedBy      string     `json:"created_by" gorm:"type:varchar(36);index"`
 	ReviewedBy     string     `json:"reviewed_by" gorm:"type:varchar(36)"`
@@ -850,6 +869,126 @@ func (s *AgentScript) BeforeCreate(tx *gorm.DB) error {
 	if !s.IsPermanent && s.ExpiresAt == nil {
 		t := time.Now().Add(30 * 24 * time.Hour)
 		s.ExpiresAt = &t
+	}
+	return nil
+}
+
+// ==========================
+// Report Engine Models
+// ==========================
+
+// ReportTemplate 报表模板，定义报表的结构和内容
+type ReportTemplate struct {
+	ID          string `json:"id" gorm:"primaryKey;size:36"`
+	Name        string `json:"name" gorm:"size:200;not null"`
+	Description string `json:"description" gorm:"size:1000"`
+	Category    string `json:"category" gorm:"size:100;default:general"`
+	OwnerID     string `json:"owner_id" gorm:"size:36"`
+	// 模板定义（JSON）：包含 sections、charts、layout 等完整定义
+	Definition string `json:"definition" gorm:"type:text"`
+	// 关联数据源配置
+	DataSourceID string `json:"data_source_id" gorm:"size:36"`
+	// 默认输出格式
+	OutputFormat string `json:"output_format" gorm:"size:20;default:pdf"`
+	// 是否系统内置模板
+	Builtin bool `json:"builtin" gorm:"default:false"`
+	// 使用次数统计
+	UseCount  int64     `json:"use_count" gorm:"default:0"`
+	Enabled   bool      `json:"enabled" gorm:"default:true"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Owner     *User     `json:"owner,omitempty" gorm:"foreignKey:OwnerID"`
+}
+
+func (t *ReportTemplate) BeforeCreate(tx *gorm.DB) error {
+	if t.ID == "" {
+		t.ID = GenerateID()
+	}
+	return nil
+}
+
+// ReportJob 报表生成任务
+type ReportJob struct {
+	ID          string `json:"id" gorm:"primaryKey;size:36"`
+	TemplateID  string `json:"template_id" gorm:"size:36;not null"`
+	Name        string `json:"name" gorm:"size:200;not null"`
+	Description string `json:"description" gorm:"size:1000"`
+	// cron 表达式，为空表示一次性任务
+	CronExpression string `json:"cron_expression" gorm:"size:100"`
+	// 输出格式：pdf, html, csv, xlsx
+	OutputFormat string `json:"output_format" gorm:"size:20;default:pdf"`
+	// 收件人列表（JSON 数组），用于邮件投递
+	Recipients string `json:"recipients" gorm:"type:text"`
+	// 额外参数（JSON），传递给模板渲染
+	Parameters string          `json:"parameters" gorm:"type:text"`
+	Status     string          `json:"status" gorm:"size:20;default:active"` // active, paused, completed
+	LastRunAt  *time.Time      `json:"last_run_at"`
+	NextRunAt  *time.Time      `json:"next_run_at"`
+	CreatedBy  string          `json:"created_by" gorm:"size:36"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	Template   *ReportTemplate `json:"template,omitempty" gorm:"foreignKey:TemplateID"`
+}
+
+func (j *ReportJob) BeforeCreate(tx *gorm.DB) error {
+	if j.ID == "" {
+		j.ID = GenerateID()
+	}
+	return nil
+}
+
+// ReportHistory 报表生成历史
+type ReportHistory struct {
+	ID         string `json:"id" gorm:"primaryKey;size:36"`
+	TemplateID string `json:"template_id" gorm:"size:36"`
+	JobID      string `json:"job_id" gorm:"size:36"`
+	Title      string `json:"title" gorm:"size:200;not null"`
+	Format     string `json:"format" gorm:"size:20;default:pdf"`
+	// 存储路径/URL
+	FilePath    string          `json:"file_path" gorm:"size:500"`
+	FileSize    int64           `json:"file_size" gorm:"default:0"`
+	RowCount    int64           `json:"row_count" gorm:"default:0"`
+	PageCount   int             `json:"page_count" gorm:"default:0"`
+	Status      string          `json:"status" gorm:"size:20;default:completed"` // completed, failed
+	ErrorMsg    string          `json:"error_msg" gorm:"size:1000"`
+	GeneratedBy string          `json:"generated_by" gorm:"size:36"`
+	GeneratedAt time.Time       `json:"generated_at"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Template    *ReportTemplate `json:"template,omitempty" gorm:"foreignKey:TemplateID"`
+}
+
+func (h *ReportHistory) BeforeCreate(tx *gorm.DB) error {
+	if h.ID == "" {
+		h.ID = GenerateID()
+	}
+	return nil
+}
+
+// ==========================
+// Config Suggestion Models
+// ==========================
+
+// ConfigSuggestion 配置建议记录
+type ConfigSuggestion struct {
+	ID          string `json:"id" gorm:"primaryKey;size:36"`
+	Type        string `json:"type" gorm:"size:50;not null;index"` // skill, datasource, provider, system
+	Title       string `json:"title" gorm:"size:200;not null"`
+	Description string `json:"description" gorm:"size:2000"`
+	// 建议内容（JSON）
+	Content string `json:"content" gorm:"type:text"`
+	// 关联资源 ID（如数据源 ID、Provider ID）
+	ResourceID   string    `json:"resource_id" gorm:"size:36;index"`
+	ResourceType string    `json:"resource_type" gorm:"size:50"`
+	Priority     int       `json:"priority" gorm:"default:0"`
+	Status       string    `json:"status" gorm:"size:20;default:pending"` // pending, applied, dismissed
+	GeneratedBy  string    `json:"generated_by" gorm:"size:36"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (s *ConfigSuggestion) BeforeCreate(tx *gorm.DB) error {
+	if s.ID == "" {
+		s.ID = GenerateID()
 	}
 	return nil
 }

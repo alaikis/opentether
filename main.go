@@ -131,6 +131,8 @@ func main() {
 
 	// Middleware
 	app.Use(recover.New())
+	app.Use(middleware.PanicRecovery())
+	app.Use(middleware.QuerySizeLimits(64 * 1024))
 	app.Use(logger.New(logger.Config{
 		Format:     "[${time}] ${status} - ${method} ${path} ${latency}\n",
 		TimeFormat: "2006-01-02 15:04:05",
@@ -145,6 +147,8 @@ func main() {
 
 	// API Key 认证中间件（在 JWT 之前，允许外部系统用 API Key 替代 Bearer Token）
 	app.Use(middleware.ApiKeyAuth(services.ApiKey))
+
+	app.Use(middleware.RateLimit(cfg.Security.RateLimit))
 
 	// 请求日志中间件（捕获 method/path/status/latency 写入 audit_log）
 	app.Use(middleware.RequestLogger(services.Log))

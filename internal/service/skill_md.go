@@ -20,7 +20,7 @@ func NewSkillFromMarkdownService(db *gorm.DB) *SkillFromMarkdownService {
 }
 
 // ParseMarkdownToSkill 解析 MD 文件内容为 Skill
-func (s *SkillFromMarkdownService) ParseMarkdownToSkill(markdownContent,filename string) (*ParsedSkill, error) {
+func (s *SkillFromMarkdownService) ParseMarkdownToSkill(markdownContent, filename string) (*ParsedSkill, error) {
 	result := &ParsedSkill{
 		SourceFile: filename,
 	}
@@ -148,12 +148,8 @@ func (s *SkillFromMarkdownService) extractKeywords(body, frontmatter, title stri
 	}
 
 	// 从内容中提取常用词
-	commonWords := map[string]bool{
-		"查询": true, "搜索": true, "分析": true, "生成": true,
-		"处理": true, "转换": true, "导出": true,
-		"员工": true, "业绩": true, "销售": true, "数据": true,
-		"报表": true, "报告": true, "PDF": true, "文档": true,
-	}
+	commonWords := map[string]bool{}
+	// 已移除硬编码业务词语白名单，Skill 关键词由 AI 从内容中提取
 
 	words := regexp.MustCompile(`[\p{Lu}\p{Lt}][\p{Ll}]+`).FindAllString(body, -1)
 	wordCount := make(map[string]int)
@@ -180,30 +176,6 @@ func (s *SkillFromMarkdownService) inferSkillType(body, frontmatter string) stri
 	if frontmatter != "" {
 		if match := regexp.MustCompile(`(?m)^skill_type:\s*(.+)$`).FindStringSubmatch(frontmatter); len(match) > 1 {
 			return strings.TrimSpace(match[1])
-		}
-	}
-
-	// 从内容推断
-	lowerBody := strings.ToLower(body)
-
-	typeIndicators := map[string][]string{
-		"text2sql":   {"查询", "sql", "数据库", "select", "数据", "统计"},
-		"api_caller": {"api", "接口", "http", "调用", "请求", "webhook"},
-		"file_process": {"文件", "上传", "下载", "处理", "转换", "解析", "excel", "csv", "pdf"},
-		"report":     {"报表", "报告", "生成", "导出", "pdf", "统计"},
-		"employee":   {"员工", "业绩", "绩效", "考勤", "人员"},
-		"chat":       {"对话", "聊天", "问答", "帮助"},
-	}
-
-	for skillType, indicators := range typeIndicators {
-		matchCount := 0
-		for _, indicator := range indicators {
-			if strings.Contains(lowerBody, indicator) {
-				matchCount++
-			}
-		}
-		if matchCount >= 2 {
-			return skillType
 		}
 	}
 
@@ -283,14 +255,14 @@ func (s *SkillFromMarkdownService) extractDataSourceConfig(body string) string {
 // CreateSkillFromParsed 从解析结果创建 Skill
 func (s *SkillFromMarkdownService) CreateSkillFromParsed(parsed *ParsedSkill) (*models.Skill, error) {
 	skill := &models.Skill{
-		Name:            parsed.Name,
-		SkillType:       parsed.SkillType,
-		Description:     parsed.Description,
-		Keywords:        parsed.Keywords,
-		Category:        parsed.Category,
-		Enabled:         parsed.Enabled,
-		PromptTemplate:  parsed.PromptTemplate,
-		VectorEnabled:   false,
+		Name:           parsed.Name,
+		SkillType:      parsed.SkillType,
+		Description:    parsed.Description,
+		Keywords:       parsed.Keywords,
+		Category:       parsed.Category,
+		Enabled:        parsed.Enabled,
+		PromptTemplate: parsed.PromptTemplate,
+		VectorEnabled:  false,
 	}
 
 	// 构建配置 JSON

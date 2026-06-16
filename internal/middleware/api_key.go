@@ -1,14 +1,20 @@
 package middleware
 
 import (
-	"github.com/alaikis/opentether/internal/service"
+	"strings"
+
+	"github.com/alaikis/opentether/internal/models"
 	"github.com/gofiber/fiber/v2"
 )
+
+type ApiKeyValidator interface {
+	Validate(rawKey string) (*models.ApiKey, error)
+}
 
 // ApiKeyAuth 创建 API Key 认证中间件
 // 支持 X-API-Key header，用于外部系统（OA/ERP）集成
 // 如果请求同时携带 Bearer Token，优先使用 Bearer Token
-func ApiKeyAuth(apiKeyService *service.ApiKeyService) fiber.Handler {
+func ApiKeyAuth(apiKeyService ApiKeyValidator) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// 如果已经有 Bearer Token，跳过
 		authHeader := c.Get("Authorization")
@@ -60,4 +66,40 @@ func RequireApiKey() fiber.Handler {
 		}
 		return c.Next()
 	}
+}
+
+func RequireApiKeyScope(requiredScope string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		authMethod, ok := c.Locals("auth_method").(string)
+		if !ok || authMethod != "api_key" {
+			return c.Status(401).JSON(fiber.Map{
+				"error":   "api_key_required",
+				"message": "此接口需要使用 X-API-Key 认证",
+			})
+		}
+
+		scopes, _ := c.Locals("scopes").(string)
+		if !hasApiKeyScope(scopes, requiredScope) {
+			c.Locals("missing_scope", requiredScope)
+			return c.Status(403).JSON(fiber.Map{
+				"error":          "insufficient_scope",
+				"required_scope": requiredScope,
+				"message":        "API Key 权限范围不足",
+			})
+		}
+		return c.Next()
+	}
+}
+
+func hasApiKeyScope(scopes string, requiredScope string) bool {
+	if requiredScope == "" {
+		return true
+	}
+	for _, scope := range strings.Split(scopes, ",") {
+		scope = strings.TrimSpace(scope)
+		if scope == "*" || scope == requiredScope {
+			return true
+		}
+	}
+	return false
 }

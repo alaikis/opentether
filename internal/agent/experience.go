@@ -41,8 +41,8 @@ func NewExperienceManager(db *gorm.DB) *ExperienceManager {
 	return &ExperienceManager{db: db}
 }
 
-// MatchExperience 匹配经验（关键词 + 语义）
-// 返回最佳匹配的经验和匹配分数
+// MatchExperience 匹配经验（关键词）
+// 返回最佳匹配的经验和匹配分数。会自动跳过被拒绝的经验。
 func (m *ExperienceManager) MatchExperience(userID, query string) (*AgentExperience, float64, error) {
 	var experiences []AgentExperience
 
@@ -59,7 +59,29 @@ func (m *ExperienceManager) MatchExperience(userID, query string) (*AgentExperie
 		return nil, 0, nil
 	}
 
+	// 加载被拒绝的经验，用于排除匹配
+	var rejected []AgentExperience
+	_ = m.db.Where(
+		"status = ? AND (scope = ? OR scope = ?)",
+		ExpStatusRejected, ExpScopeGlobal, ExpScopeUser+userID,
+	).Find(&rejected).Error
+
 	queryLower := strings.ToLower(query)
+
+	// 先检查是否命中已拒绝的经验（否定匹配），避免重复推荐已被否决的模式
+	for _, rej := range rejected {
+		var rejPatterns []string
+		if json.Unmarshal([]byte(rej.TriggerPattern), &rejPatterns) != nil {
+			continue
+		}
+		for _, pattern := range rejPatterns {
+			if strings.Contains(queryLower, strings.ToLower(pattern)) {
+				log.Printf("[Experience] 查询命中已拒绝经验的触发模式 %q，跳过经验匹配", pattern)
+				return nil, 0, nil
+			}
+		}
+	}
+
 	var bestMatch *AgentExperience
 	bestScore := 0.0
 
@@ -168,8 +190,9 @@ func (m *ExperienceManager) TrySaveExperience(userID, query string, steps []Loop
 var builtinToolNames = map[string]bool{
 	"chat":            true,
 	"text2sql":        true,
-	"generate_pdf":    true,
+	"generate_chart":  true,
 	"generate_report": true,
+	"generate_pdf":    true,
 	"setup_env":       true,
 	"execute_script":  true,
 }
@@ -200,20 +223,46 @@ func (m *ExperienceManager) ExecuteExperience(ctx context.Context, engine *Agent
 
 	// 按步骤执行（串行，因为步骤间可能有依赖）
 	var observations []string
+	hasFailure := false
 	for _, step := range steps {
 		if step.Action == "tool_call" || step.Action == "parallel_call" {
 			// 验证工具在当前环境中仍可用
 			if !isToolAvailable(engine.db, step.ToolName) {
 				observations = append(observations, fmt.Sprintf("[%s 不可用] 该工具对应的 Skill 已被删除或禁用，跳过此步骤", step.ToolName))
+				hasFailure = true
 				continue
 			}
 			result, err := engine.executeTool(ctx, user, step.ToolName, step.ToolInput)
 			if err != nil {
 				observations = append(observations, fmt.Sprintf("[%s 失败] %v", step.ToolName, err))
+				hasFailure = true
 			} else {
 				observations = append(observations, fmt.Sprintf("[%s] %s", step.ToolName, result))
 			}
 		}
+	}
+
+	// 部分失败时，仍返回已有观察结果，但会触发降级统计
+	if hasFailure {
+		exp.FailCount++
+		if exp.SuccessCount > 0 {
+			exp.SuccessCount = 0
+		}
+		m.db.Model(exp).Updates(map[string]interface{}{
+			"usage_count":   gorm.Expr("usage_count + 1"),
+			"fail_count":    exp.FailCount,
+			"success_count": 0,
+		})
+		if exp.FailCount >= 3 {
+			exp.Status = ExpStatusPending
+			_ = m.db.Model(exp).Update("status", ExpStatusPending).Error
+			log.Printf("[Experience] %s 连续失败 %d 次，自动降级为待审核, 请管理员检查", exp.Name, exp.FailCount)
+		}
+	} else {
+		m.db.Model(exp).Updates(map[string]interface{}{
+			"usage_count":   gorm.Expr("usage_count + 1"),
+			"success_count": gorm.Expr("success_count + 1"),
+		})
 	}
 
 	// 简单组装结果
@@ -221,12 +270,6 @@ func (m *ExperienceManager) ExecuteExperience(ctx context.Context, engine *Agent
 	for _, obs := range observations {
 		sb.WriteString(obs + "\n\n")
 	}
-
-	// 更新使用统计
-	m.db.Model(exp).Updates(map[string]interface{}{
-		"usage_count":   gorm.Expr("usage_count + 1"),
-		"success_count": gorm.Expr("success_count + 1"),
-	})
 
 	return &ChatResponse{
 		Message:    sb.String(),

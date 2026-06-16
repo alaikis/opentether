@@ -59,6 +59,7 @@ func Migrate(db *gorm.DB) error {
 		&models.Provider{},
 		&models.DataSource{},
 		&models.Skill{},
+		&models.SkillConfigVersion{},
 		&models.RouteExample{},
 		&models.SkillRuntimeMemory{},
 		&models.MCPConfig{},
@@ -83,6 +84,10 @@ func Migrate(db *gorm.DB) error {
 		&models.SQLAudit{},
 		&models.UserProfile{},
 		&models.CompanyProfile{},
+		&models.ReportTemplate{},
+		&models.ReportJob{},
+		&models.ReportHistory{},
+		&models.ConfigSuggestion{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)

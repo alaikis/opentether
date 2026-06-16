@@ -81,6 +81,8 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Delete("/skills/:id", h.DeleteSkill)
 	adminAdmin.Post("/skills/:id/test", h.TestSkill)
 	adminAdmin.Post("/skills/:id/sync", h.SyncSkillVector)
+	admin.Get("/skills/:id/config-versions", h.ListSkillConfigVersions)
+	adminAdmin.Post("/skills/:id/config-versions/:version/restore", h.RestoreSkillConfigVersion)
 	admin.Get("/skills/route-examples", h.ListRouteExamples)
 	adminAdmin.Post("/skills/route-examples", h.CreateRouteExample)
 	adminAdmin.Post("/skills/route-examples/:id/review", h.ReviewRouteExample)
@@ -98,6 +100,8 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	// MCP
 	admin.Get("/mcp/configs", h.ListMCPConfigs)
 	adminAdmin.Post("/mcp/configs", h.CreateMCPConfig)
+	adminAdmin.Put("/mcp/configs/:id", h.UpdateMCPConfig)
+	adminAdmin.Delete("/mcp/configs/:id", h.DeleteMCPConfig)
 	adminAdmin.Post("/mcp/configs/:id/start", h.StartMCPServer)
 	adminAdmin.Post("/mcp/configs/:id/stop", h.StopMCPServer)
 	admin.Get("/mcp/configs/:id/status", h.GetMCPStatus)
@@ -140,6 +144,15 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Post("/sql-audits/:id/approve", h.ApproveSQLAudit)
 	adminAdmin.Post("/sql-audits/:id/reject", h.RejectSQLAudit)
 
+	// Soul / 记忆管理
+	admin.Get("/soul/company", h.GetCompanySoul)
+	adminAdmin.Put("/soul/company", h.UpdateCompanySoul)
+	admin.Get("/soul/user/:id", h.GetUserSoul)
+	adminAdmin.Put("/soul/user/:id", h.UpdateUserSoul)
+	admin.Get("/memories/user/:id", h.ListUserMemories)
+	admin.Get("/memories/group/:id", h.ListGroupMemories)
+	adminAdmin.Delete("/memories/:id", h.DeleteMemory)
+
 	// 日志
 	admin.Get("/logs/audit", h.ListAuditLogs)
 	admin.Get("/logs/request", h.ListRequestLogs)
@@ -153,6 +166,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 
 	// 系统设置
 	admin.Get("/system/config", h.GetSystemConfig)
+	adminAdmin.Get("/system/readiness", h.GetSystemReadiness)
 	adminAdmin.Put("/system/config", h.UpdateSystemConfig)
 	adminAdmin.Post("/system/smtp/test", h.TestSMTP)
 
@@ -184,8 +198,8 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	user.Post("/api-keys/:id/regenerate", h.RegenerateApiKey)
 
 	// === 外部系统集成接口（API Key 认证） ===
-	external := api.Group("/external")
-	external.Post("/bind-im", h.ExternalBindIM)
-	external.Get("/users", h.ExternalListUsers)
-	external.Post("/im/confirm-bind", h.ConfirmIMBinding)
+	external := api.Group("/external", middleware.RequireApiKey())
+	external.Post("/bind-im", middleware.RequireApiKeyScope("external:im:bind"), h.ExternalBindIM)
+	external.Get("/users", middleware.RequireApiKeyScope("external:users:read"), h.ExternalListUsers)
+	external.Post("/im/confirm-bind", middleware.RequireApiKeyScope("external:im:confirm"), h.ConfirmIMBinding)
 }

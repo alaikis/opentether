@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/alaikis/opentether/internal/agent"
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -29,7 +28,6 @@ func main() {
 	fmt.Println("STEP 1: parseText2SQLTemplateIntent")
 	fmt.Printf("  输入: %s\n", q)
 
-	m := strings.ToLower(q)
 	metric, tr, emp := parseTemplateIntent(q)
 	fmt.Printf("  metric=%s, timeRange=%s, employee=%s\n", metric, tr, emp)
 
@@ -237,7 +235,6 @@ func main() {
 
 	fmt.Println("\n=============================================")
 	_ = os.Stdout
-	_ = agent.NewAgentEngine(nil, nil, nil, nil)
 }
 
 func parseTemplateIntent(q string) (metric, timeRange, employee string) {

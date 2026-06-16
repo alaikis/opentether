@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,7 +14,11 @@ import (
 )
 
 func TestTraceLinFengQuery(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("../data/opentether.db"), &gorm.Config{
+	dbPath := "../data/opentether.db"
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("local diagnostic database not available: %v", err)
+	}
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {

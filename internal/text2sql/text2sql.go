@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -110,15 +111,18 @@ func (t *Text2SQL) SetAuditService(svc AuditRecorder) {
 
 // QueryRequest represents a text2sql query request
 type QueryRequest struct {
-	Question          string
-	DataSourceID      string
-	SchemaContext     string                 // Optional schema context
-	UserID            string                 // 用户 ID（审计用）
-	SkillID           string                 // Skill ID（审计用）
-	IsAdmin           bool                   // 是否为管理员（管理员自动通过审批）
-	AllowedOps        []string               // 允许的 SQL 操作前缀（为空时默认只读）
-	DataBoundaryRules []DataBoundaryRule     // 数据边界规则（用户组/用户级别的字段映射）
-	UserContext       map[string]interface{} // 用户上下文字段值（如 global_user_id, company_user_id 等）
+	Question              string
+	RawSQL                string
+	DataSourceID          string
+	SchemaContext         string                 // Optional schema context
+	UserID                string                 // 用户 ID（审计用）
+	SkillID               string                 // Skill ID（审计用）
+	IsAdmin               bool                   // 是否为管理员（管理员自动通过审批）
+	AllowedOps            []string               // 允许的 SQL 操作前缀（为空时默认只读）
+	DataBoundaryRules     []DataBoundaryRule     // 数据边界规则（用户组/用户级别的字段映射）
+	UserContext           map[string]interface{} // 用户上下文字段值（如 global_user_id, company_user_id 等）
+	SecureSemanticContext *SecureSemanticContext // 安全语义上下文（query_plan 模式）
+	Permissions           []DataPermission       // 解析后的数据权限（系统强制执行）
 }
 
 type DataBoundaryRule struct {
@@ -149,6 +153,12 @@ func (t *Text2SQL) GenerateSQL(ctx context.Context, req *QueryRequest) (*QueryRe
 		Question: req.Question,
 	}
 
+	// query_plan 模式：LLM 生成结构化查询计划，系统构建安全 SQL
+	if req.SecureSemanticContext != nil && req.SecureSemanticContext.Enabled {
+		_, err := t.generateQueryPlan(ctx, req, result)
+		return result, err
+	}
+
 	// Get datasource schema
 	schema, err := t.GetDataSourceSchema(req.DataSourceID)
 	if err != nil {
@@ -168,8 +178,8 @@ func (t *Text2SQL) GenerateSQL(ctx context.Context, req *QueryRequest) (*QueryRe
 	// Build prompt for LLM
 	prompt := t.buildPrompt(req.Question, schema)
 
-	// Call LLM to generate SQL
-	resp, err := t.llmClient.ChatCompletion(ctx, llm.ChatRequest{
+	// Call LLM to generate SQL (含 HTTP 级重试)
+	resp, err := llm.ChatCompletionWithRetry(t.llmClient, ctx, llm.ChatRequest{
 		Model: t.llmClient.GetModel(),
 		Messages: []llm.Message{
 			{Role: "system", Content: "You are a SQL expert. Generate SQL queries based on the schema provided. Only output the SQL query, no explanations."},
@@ -177,7 +187,7 @@ func (t *Text2SQL) GenerateSQL(ctx context.Context, req *QueryRequest) (*QueryRe
 		},
 		MaxTokens:   1000,
 		Temperature: 0.1,
-	})
+	}, 3)
 
 	if err != nil {
 		result.Error = fmt.Sprintf("LLM 调用失败: %v", err)
@@ -210,21 +220,21 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 	// 检查是否有外部数据库连接
 	if t.externalDB == nil {
 		result.Error = "未配置数据源，请先配置数据源后再执行查询"
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 
-	// First generate SQL
-	genResult, err := t.GenerateSQL(ctx, req)
-	if err != nil {
-		return genResult, err
+	if strings.TrimSpace(req.RawSQL) != "" {
+		result.SQL = req.RawSQL
+	} else {
+		genResult, err := t.GenerateSQL(ctx, req)
+		if err != nil {
+			return genResult, err
+		}
+		if genResult.Error != "" {
+			return genResult, nil
+		}
+		result.SQL = genResult.SQL
 	}
-
-	if genResult.Error != "" {
-		return genResult, nil
-	}
-
-	// Use the generated SQL
-	result.SQL = genResult.SQL
 
 	// Check if SQL is read-only and safe to execute
 	if err := validateReadOnlySQL(result.SQL, req.AllowedOps); err != nil {
@@ -232,11 +242,15 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 		return result, nil
 	}
 
-	if boundedSQL, err := applyDataBoundaryRules(result.SQL, req.DataBoundaryRules, req.UserContext); err != nil {
-		result.Error = fmt.Sprintf("数据边界规则错误: %v", err)
-		return result, nil
-	} else {
-		result.SQL = boundedSQL
+	// 数据边界规则：仅在旧模式（非意图构建/query_plan）时应用
+	// 新模式下权限已在 BuildSQL 中嵌入
+	if req.SecureSemanticContext == nil || !req.SecureSemanticContext.Enabled {
+		if boundedSQL, err := applyDataBoundaryRules(result.SQL, req.DataBoundaryRules, req.UserContext); err != nil {
+			result.Error = fmt.Sprintf("数据边界规则错误: %v", err)
+			return result, nil
+		} else {
+			result.SQL = boundedSQL
+		}
 	}
 
 	// Add LIMIT if missing
@@ -267,7 +281,9 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 	}
 
 	// Execute the SQL
-	rows, err := t.externalDB.QueryContext(ctx, result.SQL)
+	queryCtx, queryCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer queryCancel()
+	rows, err := t.externalDB.QueryContext(queryCtx, result.SQL)
 	if err != nil {
 		result.Error = fmt.Sprintf("SQL 执行失败: %v", err)
 		return result, nil
@@ -282,8 +298,12 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 	}
 	result.Columns = columns
 
-	// Scan results
+	const maxRows = 1000
 	for rows.Next() {
+		if len(result.Rows) >= maxRows {
+			result.Error = fmt.Sprintf("结果超过 %d 行，已截断。请缩小查询范围。", maxRows)
+			break
+		}
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
 		for i := range values {
@@ -293,6 +313,11 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 		if err := rows.Scan(valuePtrs...); err != nil {
 			result.Error = fmt.Sprintf("扫描行失败: %v", err)
 			break
+		}
+		for i, value := range values {
+			if b, ok := value.([]byte); ok {
+				values[i] = string(b)
+			}
 		}
 		result.Rows = append(result.Rows, values)
 	}
@@ -708,6 +733,64 @@ func (t *Text2SQL) parseSQL(response string) string {
 	return strings.TrimSpace(cleaned)
 }
 
+// generateQueryPlan uses the LLM to generate a structured QueryPlan and builds safe SQL.
+// Supports AI-driven correction retry (max 5 rounds) when the LLM returns invalid JSON.
+func (t *Text2SQL) generateQueryPlan(ctx context.Context, req *QueryRequest, result *QueryResult) (*QueryResult, error) {
+	secure := req.SecureSemanticContext
+	basePrompt := secure.RenderPrompt() + "\n\n用户问题: " + req.Question
+	messages := []llm.Message{
+		{Role: "system", Content: "You are a SQL expert. You MUST output valid JSON only, no markdown, no explanations."},
+		{Role: "user", Content: basePrompt},
+	}
+
+	for attempt := 0; attempt < 5; attempt++ {
+		resp, err := llm.ChatCompletionWithRetry(t.llmClient, ctx, llm.ChatRequest{
+			Model:       t.llmClient.GetModel(),
+			Messages:    messages,
+			MaxTokens:   1000,
+			Temperature: 0.1,
+		}, 3)
+		if err != nil {
+			result.Error = fmt.Sprintf("LLM 调用失败: %v", err)
+			return result, err
+		}
+
+		if strings.TrimSpace(resp.Content) == "" {
+			if attempt < 4 {
+				messages = append(messages, llm.Message{Role: "user", Content: "你的响应为空，请返回有效的 JSON 查询计划。"})
+				continue
+			}
+			result.Error = "LLM 返回空响应"
+			return result, nil
+		}
+
+		plan, err := ParseQueryPlan(resp.Content)
+		if err == nil {
+			sql, sqlErr := BuildSQL(*plan, *secure, req.Permissions...)
+			if sqlErr == nil {
+				result.SQL = sql
+				return result, nil
+			}
+			err = fmt.Errorf("SQL 构建失败: %w", sqlErr)
+		}
+
+		// AI correction: feed error back to LLM
+		if attempt < 4 {
+			lastResp := resp.Content
+			if len([]rune(lastResp)) > 300 {
+				lastResp = string([]rune(lastResp)[:300]) + "..."
+			}
+			correction := fmt.Sprintf("你上次的 JSON 查询计划无效: %v。\n上次响应: %s\n请修正并只返回有效 JSON 查询计划。", err, lastResp)
+			messages = append(messages, llm.Message{Role: "user", Content: correction})
+			continue
+		}
+		result.Error = fmt.Sprintf("查询计划解析失败（已重试%d次）: %v", attempt+1, err)
+		return result, nil
+	}
+	result.Error = "已达最大纠错轮数"
+	return result, nil
+}
+
 // extractSQLFromCodeBlock 从 markdown 代码块中提取 SQL
 func extractSQLFromCodeBlock(response string) string {
 	// 匹配 ```sql ... ``` 或 ``` ... ```
@@ -776,7 +859,7 @@ func (t *Text2SQL) TestConnection(dataSourceID string) error {
 	}
 
 	if !result["success"].(bool) {
-		return fmt.Errorf(result["message"].(string))
+		return fmt.Errorf("%s", result["message"].(string))
 	}
 
 	return nil

@@ -52,3 +52,10 @@ func (s *SoulService) DeleteUserMemory(id string) error {
 func (s *SoulService) ListGroupMemories(groupID string) ([]agent.GroupMemory, error) {
 	return s.letm().RecallGroupMemories([]string{groupID}, "", 50)
 }
+
+func (s *SoulService) DeleteMemory(id string) error {
+	if err := s.db.Delete(&agent.UserMemory{}, "id = ?", id).Error; err != nil {
+		return err
+	}
+	return s.db.Delete(&agent.GroupMemory{}, "id = ?", id).Error
+}

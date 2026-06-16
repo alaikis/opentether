@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, tick } from "svelte";
+    import { onMount, onDestroy, tick } from "svelte";
     import { api } from "$lib/api/client";
     import { toast } from "$lib/stores/toast";
     import { page } from "$app/stores";
@@ -86,6 +86,8 @@
     let skillSearch = "";
 
     let messagesEnd: HTMLElement;
+    let syncTimer: ReturnType<typeof setInterval> | null = null;
+    let lastMessagesSignature = "";
     let loadingConversations = true;
     let loadingMessages = false;
     let pageError = "";
@@ -125,6 +127,7 @@
     // ── Init ───────────────────────────────────────
     onMount(async () => {
         await tick();
+        syncTimer = setInterval(syncActiveConversation, 3000);
 
         try {
             await Promise.all([loadConversations(), loadSkills()]);
@@ -141,6 +144,18 @@
             loadingConversations = false;
         }
     });
+
+    onDestroy(() => {
+        if (syncTimer) clearInterval(syncTimer);
+    });
+
+    $: if (messages.length) {
+        const signature = messageSignature(messages);
+        if (signature !== lastMessagesSignature) {
+            lastMessagesSignature = signature;
+            tick().then(scrollToBottom);
+        }
+    }
 
     // ── Conversations ──────────────────────────────
     async function loadConversations() {
@@ -338,6 +353,28 @@
         }
     }
 
+    async function syncActiveConversation() {
+        if (!activeConvId || streaming || loadingMessages) return;
+        let data: any;
+        try {
+            data = await api.get(`/user/conversations/${activeConvId}`);
+        } catch { return }
+        if (!data?.messages) return;
+        let remote = data.messages.map((m: any) => ({
+            id: m.id, role: m.role, content: m.content, skill_used: m.skill_used,
+        }));
+        let sig = messageSignature(remote);
+        if (sig === lastMessagesSignature) return;
+        let hasNew = remote.length > messages.length;
+        messages = remote;
+        if (hasNew) setTimeout(scrollToBottom, 100);
+    }
+
+    function messageSignature(msgs: Message[]): string {
+        if (!msgs.length) return "";
+        return msgs.length + ":" + (msgs[msgs.length - 1].id || msgs[msgs.length - 1].content.slice(0, 20));
+    }
+
     // ── Helpers ────────────────────────────────────
     async function copyMessage(content: string) {
         try {
@@ -405,10 +442,10 @@
 
     function cleanEventContent(content: string) {
         return content
-            .replace(/^\u{1F4AD}\s*正在思考:\s*/, "")
-            .replace(/^\u{1F527}\s*正在调用:\s*/, "")
-            .replace(/^\u26A0\uFE0F\s*/, "")
-            .replace(/^\u{1F9ED}\s*话题路由:\s*/, "")
+            .replace(/^\u{1F4AD}\s*正在思考:\s*/u, "")
+            .replace(/^\u{1F527}\s*正在调用:\s*/u, "")
+            .replace(/^\u26A0\uFE0F\s*/u, "")
+            .replace(/^\u{1F9ED}\s*话题路由:\s*/u, "")
             .trim();
     }
 
@@ -499,6 +536,26 @@
             };
         }
 
+        const aggregate = normalized.match(/(?:^|\s)\d+\.\s*([a-zA-Z_\u4e00-\u9fa5]+):\s*([\d,]+(?:\.\d+)?)/);
+        if (aggregate) {
+            const labelMap: Record<string, { label: string; unit: string }> = {
+                order_count: { label: "订单数", unit: "单" },
+                count: { label: "数量", unit: "条" },
+                performance: { label: "业绩", unit: "元" },
+                amount: { label: "金额", unit: "元" },
+                sales_amount: { label: "销售额", unit: "元" },
+            };
+            const mapped = labelMap[aggregate[1]] || {
+                label: aggregate[1],
+                unit: "",
+            };
+            return {
+                label: mapped.label,
+                value: aggregate[2],
+                unit: mapped.unit,
+            };
+        }
+
         const count = normalized.match(patterns[1]);
         if (count) {
             return {
@@ -509,6 +566,74 @@
         }
 
         return null;
+    }
+
+    interface TrendSeries {
+        name: string;
+        values: number[];
+        unit: string;
+    }
+    interface TrendChartData {
+        title: string;
+        type: "line" | "bar";
+        labels: string[];
+        series: TrendSeries[];
+    }
+
+    function extractTrendChart(text: string): TrendChartData | null {
+        if (!text.includes("趋势图表")) return null;
+        const labelMatch = text.match(/月份[:：]\s*([^\n]+)/);
+        if (!labelMatch) return null;
+        const labels = labelMatch[1].split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+        const type = /图表类型[:：]\s*bar/i.test(text) || text.includes("柱状图") ? "bar" : "line";
+        const series: TrendSeries[] = [];
+        const re = /([^\n：:]+)[:：]\s*\[([^\]]+)\]/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text))) {
+            const name = m[1].trim();
+            if (name === "月份") continue;
+            const values = m[2].split(/[,，\s]+/).map((s) => Number(s.trim())).filter((n) => !Number.isNaN(n));
+            if (values.length === labels.length) {
+                series.push({ name, values, unit: name.includes("订单") ? "单" : "元" });
+            }
+        }
+        if (!labels.length || !series.length) return null;
+        return { title: series.map((s) => s.name).join(" / ") + "趋势", type, labels, series };
+    }
+
+    function mustTrendChart(text: string): TrendChartData {
+        return extractTrendChart(text) as TrendChartData;
+    }
+
+    function chartPolyline(values: number[], width = 520, height = 180): string {
+        if (!values.length) return "";
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        return values.map((v, i) => {
+            const x = values.length === 1 ? width / 2 : (i / (values.length - 1)) * width;
+            const y = height - ((v - min) / range) * (height - 24) - 12;
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+    }
+
+    function chartColor(i: number): string {
+        return ["#2563eb", "#16a34a", "#f97316", "#9333ea"][i % 4];
+    }
+
+    function chartMax(chart: TrendChartData): number {
+        return Math.max(1, ...chart.series.flatMap((s) => s.values));
+    }
+
+    function chartPoints(values: number[], width = 520, height = 180) {
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        return values.map((v, i) => ({
+            x: values.length === 1 ? width / 2 : (i / (values.length - 1)) * width,
+            y: height - ((v - min) / range) * (height - 24) - 12,
+            v,
+        }));
     }
 
     function isConciseMetricAnswer(text: string) {
@@ -961,7 +1086,49 @@
                                     {/if}
 
                                     {#if msg.content}
-                                        {#if isConciseMetricAnswer(msg.content)}
+                                        {#if extractTrendChart(msg.content)}
+                                            {@const chart = mustTrendChart(msg.content)}
+                                            <div class="rounded-2xl rounded-bl-md border border-blue-100 bg-white px-4 py-3 shadow-sm max-w-full overflow-hidden">
+                                                <div class="flex items-center justify-between mb-3">
+                                                    <div>
+                                                        <div class="text-sm font-semibold text-slate-800">{chart.title}</div>
+                                                        <div class="text-xs text-slate-400">前端内置 SVG 渲染，无需 Python/Storage</div>
+                                                    </div>
+                                                </div>
+                                                <svg viewBox="0 0 520 230" class="w-full h-60 overflow-visible">
+                                                    <line x1="0" y1="180" x2="520" y2="180" stroke="#e2e8f0" />
+                                                    {#if chart.type === "bar"}
+                                                        {@const max = chartMax(chart)}
+                                                        {@const groupW = 520 / chart.labels.length}
+                                                        {@const barW = Math.max(8, (groupW - 14) / chart.series.length)}
+                                                        {#each chart.labels as label, idx}
+                                                            {#each chart.series as s, sidx}
+                                                                {@const v = s.values[idx]}
+                                                                {@const h = (v / max) * 150}
+                                                                {@const x = idx * groupW + 7 + sidx * barW}
+                                                                <rect x={x} y={180 - h} width={barW - 2} height={h} rx="3" fill={chartColor(sidx)} opacity="0.85" />
+                                                                <text x={x + barW / 2} y={176 - h} text-anchor="middle" class="fill-slate-600 text-[10px]">{v.toFixed(0)}</text>
+                                                            {/each}
+                                                            <text x={idx * groupW + groupW / 2} y="205" text-anchor="middle" class="fill-slate-500 text-[11px]">{label}</text>
+                                                        {/each}
+                                                    {:else}
+                                                        {#each chart.series as s, sidx}
+                                                            <polyline points={chartPolyline(s.values)} fill="none" stroke={chartColor(sidx)} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+                                                            {#each chartPoints(s.values) as p, idx}
+                                                                <circle cx={p.x} cy={p.y} r="4" fill={chartColor(sidx)} />
+                                                                <text x={p.x} y={p.y - 10} text-anchor="middle" class="fill-slate-600 text-[11px]">{p.v.toFixed(0)}{s.unit}</text>
+                                                                <text x={p.x} y="205" text-anchor="middle" class="fill-slate-500 text-[11px]">{chart.labels[idx]}</text>
+                                                            {/each}
+                                                        {/each}
+                                                    {/if}
+                                                </svg>
+                                                <div class="flex flex-wrap gap-3 text-xs text-slate-600">
+                                                    {#each chart.series as s, i}
+                                                        <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded" style={`background:${chartColor(i)}`}></span>{s.name}</span>
+                                                    {/each}
+                                                </div>
+                                            </div>
+                                        {:else if isConciseMetricAnswer(msg.content)}
                                             {@const metric =
                                                 extractMetricResult(
                                                     msg.content,

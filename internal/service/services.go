@@ -690,9 +690,10 @@ func (s *DataSourceService) UpdateSchemaInfo(id string, schemaInfo string) error
 }
 
 type SkillService struct {
-	db      *gorm.DB
-	store   storage.Driver
-	devMode bool
+	db                 *gorm.DB
+	store              storage.Driver
+	devMode            bool
+	onClassifierReload func()
 }
 
 var ErrBuiltinSkillProtected = errors.New("system built-in skills cannot be modified")
@@ -703,6 +704,59 @@ func NewSkillService(db *gorm.DB, devMode bool, stores ...storage.Driver) *Skill
 		store = stores[0]
 	}
 	return &SkillService{db: db, store: store, devMode: devMode}
+}
+
+// SetClassifierReloadCallback 设置分类器重载回调，在拒绝路由样本时触发。
+func (s *SkillService) SetClassifierReloadCallback(fn func()) {
+	s.onClassifierReload = fn
+}
+
+func (s *SkillService) notifyClassifierReload() {
+	if s != nil && s.onClassifierReload != nil {
+		s.onClassifierReload()
+	}
+}
+
+func (s *SkillService) snapshotConfig(skillID, config, action, actorID, note string) error {
+	if s == nil || s.db == nil || skillID == "" {
+		return nil
+	}
+	version := time.Now().UTC().Format("20060102150405") + fmt.Sprintf("%09d", time.Now().UTC().Nanosecond())
+	snap := models.SkillConfigVersion{SkillID: skillID, Version: version, Config: config, Action: action, ActorID: actorID, Note: note}
+	return s.db.Create(&snap).Error
+}
+
+func (s *SkillService) ListConfigVersions(skillID string, limit int) ([]models.SkillConfigVersion, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	var versions []models.SkillConfigVersion
+	err := s.db.Where("skill_id = ?", skillID).Order("created_at DESC").Limit(limit).Find(&versions).Error
+	return versions, err
+}
+
+func (s *SkillService) RestoreConfigVersion(skillID, versionID, actorID string) (*models.Skill, error) {
+	var skill models.Skill
+	if err := s.db.Where("id = ?", skillID).First(&skill).Error; err != nil {
+		return nil, err
+	}
+	if isBuiltinSkill(skill) && !s.devMode {
+		return nil, ErrBuiltinSkillProtected
+	}
+	var version models.SkillConfigVersion
+	if err := s.db.Where("skill_id = ? AND (id = ? OR version = ?)", skillID, versionID, versionID).First(&version).Error; err != nil {
+		return nil, err
+	}
+	if err := s.snapshotConfig(skill.ID, skill.Config, "restore_backup", actorID, "恢复前自动备份"); err != nil {
+		return nil, err
+	}
+	if err := s.db.Model(&skill).Update("config", version.Config).Error; err != nil {
+		return nil, err
+	}
+	_ = s.snapshotConfig(skill.ID, version.Config, "restore", actorID, "恢复到版本 "+version.Version)
+	skill.Config = version.Config
+	s.notifyClassifierReload()
+	return &skill, nil
 }
 
 func isBuiltinSkill(skill models.Skill) bool {
@@ -838,9 +892,11 @@ func (s *SkillService) UpdateContextMD(id, content string, publish bool) (map[st
 	}
 	delete(cfg, "context_md")
 	b, _ := json.Marshal(cfg)
-	if err := s.db.Model(&skill).Update("config", string(b)).Error; err != nil {
+	config := string(b)
+	if err := s.db.Model(&skill).Update("config", config).Error; err != nil {
 		return nil, err
 	}
+	_ = s.snapshotConfig(skill.ID, config, "context_md_update", "", "更新 Skill 上下文 MD")
 	return map[string]interface{}{"success": true, "url": url, "path": objectPath, "version": version, "published": publish}, nil
 }
 
@@ -962,9 +1018,11 @@ func (s *SkillService) Create(input CreateSkillInput) (*models.Skill, error) {
 	if err := s.db.Create(&skill).Error; err != nil {
 		return &skill, err
 	}
+	_ = s.snapshotConfig(skill.ID, skill.Config, "create", "", "创建 Skill")
 	if config, changed := s.persistSkillContextMD(skill.ID, skill.Config); changed {
 		skill.Config = config
 		_ = s.db.Model(&skill).Update("config", config).Error
+		_ = s.snapshotConfig(skill.ID, config, "context_md_publish", "", "创建时生成上下文 MD")
 	}
 	return &skill, nil
 }
@@ -988,6 +1046,11 @@ func (s *SkillService) Update(id string, input UpdateSkillInput) (*models.Skill,
 		updates["config"] = config
 	}
 	err := s.db.Model(&skill).Updates(updates).Error
+	if err == nil {
+		if config, ok := updates["config"].(string); ok {
+			_ = s.snapshotConfig(id, config, "update", "", "更新 Skill 配置")
+		}
+	}
 	return &skill, err
 }
 
@@ -1029,6 +1092,7 @@ func (s *SkillService) ReviewRouteExample(id, action string) (*models.RouteExamp
 		ex.Status = "rejected"
 		ex.Source = "rejected"
 		ex.Confidence = 0
+		s.notifyClassifierReload()
 	default:
 		return nil, fmt.Errorf("unsupported route example action: %s", action)
 	}
@@ -1726,6 +1790,14 @@ func (s *AgentService) SetSQLAuditor(auditor text2sql.AuditRecorder) {
 	s.sqlAuditor = auditor
 }
 
+// ReloadFastPathClassifier 强制重载快路径路由分类器，在管理员拒绝 RouteExample 后触发。
+func (s *AgentService) ReloadFastPathClassifier() {
+	eng := s.getEngine()
+	if eng != nil {
+		eng.ReloadFastPathClassifier()
+	}
+}
+
 func (s *AgentService) ListRuntimeJobs(userID, status string, limit int) ([]models.RuntimeJob, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -1838,6 +1910,21 @@ func (s *AgentService) RetryRuntimeJob(userID, jobID string) (map[string]interfa
 	return result, loopErr
 }
 
+func (s *AgentService) recentConversationMessages(conversationID string, limit int) []models.Message {
+	if limit <= 0 {
+		limit = 8
+	}
+	var desc []models.Message
+	if err := s.db.Where("conversation_id = ?", conversationID).Order("created_at DESC").Limit(limit).Find(&desc).Error; err != nil {
+		return nil
+	}
+	recent := make([]models.Message, 0, len(desc))
+	for i := len(desc) - 1; i >= 0; i-- {
+		recent = append(recent, desc[i])
+	}
+	return recent
+}
+
 func (s *AgentService) Chat(userID, message, conversationID, skillID string) (map[string]interface{}, error) {
 	// 创建或获取会话
 	conv, err := s.getOrCreateConversation(userID, conversationID)
@@ -1869,6 +1956,14 @@ func (s *AgentService) Chat(userID, message, conversationID, skillID string) (ma
 	}
 
 	agentUser := buildAgentUser(s.db, user, skillID)
+	if clarify := agent.ResolveQueryClarification(message, s.recentConversationMessages(conv.ID, 8), conv.ID); clarify.NeedsClarify && clarify.Response != nil {
+		aiMsg := models.Message{ConversationID: conv.ID, Role: "assistant", Content: clarify.Response.Message, TokenCount: clarify.Response.TokensUsed, Metadata: fmt.Sprintf(`{"skill_used":"%s","clarification":true}`, clarify.Response.SkillUsed)}
+		s.db.Create(&aiMsg)
+		_ = engine.UpdateConversationMemory(agentUser, conv.ID, message, clarify.Response.Message)
+		return map[string]interface{}{"message": clarify.Response.Message, "conversation_id": conv.ID, "skill_used": clarify.Response.SkillUsed, "data": clarify.Response.Data}, nil
+	} else if clarify.Rewritten {
+		message = clarify.Message
+	}
 
 	if fastResp, ok, fastErr := engine.TryFastPath(ctx, agentUser, message, conv.ID); fastErr == nil && ok {
 		engine.LearnRouteExampleCandidate(message, fastResp.SkillUsedToRoute(), "", 0.7)
@@ -1948,6 +2043,12 @@ func (s *AgentService) ChatStream(userID, message, conversationID, skillID strin
 	s.db.Preload("Groups").Where("id = ?", userID).First(&user)
 
 	agentUser := buildAgentUser(s.db, user, skillID)
+	var clarifyResp *agent.ChatResponse
+	if clarify := agent.ResolveQueryClarification(message, s.recentConversationMessages(conv.ID, 8), conv.ID); clarify.NeedsClarify && clarify.Response != nil {
+		clarifyResp = clarify.Response
+	} else if clarify.Rewritten {
+		message = clarify.Message
+	}
 
 	ch := make(chan string, 20)
 	var fullResponse strings.Builder
@@ -1957,6 +2058,19 @@ func (s *AgentService) ChatStream(userID, message, conversationID, skillID strin
 
 		ctx, cancel := context.WithTimeout(context.Background(), agent.LoopTimeout)
 		defer cancel()
+
+		if clarifyResp != nil {
+			for _, r := range clarifyResp.Message {
+				ch <- string(r)
+			}
+			fullResponse.WriteString(clarifyResp.Message)
+			metaJSON, _ := json.Marshal(map[string]interface{}{"type": "meta", "skill_used": clarifyResp.SkillUsed})
+			ch <- string(metaJSON)
+			aiMsg := models.Message{ConversationID: conv.ID, Role: "assistant", Content: clarifyResp.Message, TokenCount: clarifyResp.TokensUsed, SkillUsed: clarifyResp.SkillUsed, Metadata: fmt.Sprintf(`{"skill_used":"%s","clarification":true}`, clarifyResp.SkillUsed)}
+			s.db.Create(&aiMsg)
+			_ = engine.UpdateConversationMemory(agentUser, conv.ID, message, clarifyResp.Message)
+			return
+		}
 
 		if fastResp, ok, fastErr := engine.TryFastPath(ctx, agentUser, message, conv.ID); fastErr == nil && ok {
 			engine.LearnRouteExampleCandidate(message, fastResp.SkillUsedToRoute(), "", 0.7)
@@ -2224,6 +2338,9 @@ func buildAgentUser(db *gorm.DB, user models.User, selectedSkillID string) *agen
 		Role:         user.Role,
 		Status:       user.Status,
 		Context:      make(map[string]interface{}),
+	}
+	if user.ExternalEmployeeID != "" {
+		ctx.Context["company_user_id"] = user.ExternalEmployeeID
 	}
 
 	for _, g := range user.Groups {

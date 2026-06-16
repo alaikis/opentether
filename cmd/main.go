@@ -97,6 +97,9 @@ func main() {
 
 	// CORS
 	app.Use(middleware.CORS(cfg.Security.CORS))
+	app.Use(middleware.ApiKeyAuth(services.ApiKey))
+	app.Use(middleware.RateLimit(cfg.Security.RateLimit))
+	app.Use(middleware.RequestLogger(services.Log))
 
 	// Setup routes (filesystem mode - admin-ui/build must exist on disk)
 	router.Setup(app, handlers, cfg, nil, db, false, store)

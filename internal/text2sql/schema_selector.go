@@ -280,62 +280,13 @@ func detectQueryComplexity(question string) int {
 }
 
 func applyComplexityScores(tables []schemaTable, scores map[string]int, complexity int) {
-	for _, table := range tables {
-		name := strings.ToLower(table.Name)
-		switch complexity {
-		case queryComplexityBasic:
-			if strings.Contains(name, "product") || strings.Contains(name, "goods") || strings.Contains(name, "sku") || strings.Contains(name, "category") || strings.Contains(name, "variant") || strings.Contains(name, "item") {
-				scores[table.Name] -= 12
-			}
-		case queryComplexityDetail:
-			if strings.Contains(name, "item") || strings.Contains(name, "detail") || strings.Contains(name, "customer") || strings.Contains(name, "address") {
-				scores[table.Name] += 8
-			}
-		case queryComplexityDimension:
-			if strings.Contains(name, "product") || strings.Contains(name, "goods") || strings.Contains(name, "sku") || strings.Contains(name, "category") || strings.Contains(name, "variant") || strings.Contains(name, "item") {
-				scores[table.Name] += 12
-			}
-		}
-	}
+	_ = tables
+	_ = complexity
 }
 
 func applyBusinessHints(question string, tables []schemaTable, scores map[string]int) {
-	hints := map[string][]string{
-		"订单":   {"order", "sale", "sales"},
-		"出单":   {"order", "sale", "sales"},
-		"多少单":  {"order", "sale", "sales"},
-		"订单数":  {"order", "sale", "sales"},
-		"订单数量": {"order", "sale", "sales"},
-		"销量":   {"order", "sale", "sales"},
-		"下单":   {"order", "sale", "sales"},
-		"销售":   {"order", "sale", "sales"},
-		"销售额":  {"order", "sale", "sales", "amount", "pay", "price"},
-		"金额":   {"amount", "pay", "price", "total"},
-		"员工":   {"profile", "staff", "employee", "user"},
-		"姓名":   {"profile", "staff", "employee", "user"},
-		"林烽":   {"profile", "staff", "employee", "user", "user_id"},
-		"客户":   {"customer", "client"},
-		"产品":   {"product", "goods", "sku"},
-		"库存":   {"stock", "inventory", "warehouse"},
-		"时间":   {"time", "date", "created", "create"},
-		"月份":   {"time", "date", "created", "create"},
-	}
-	for keyword, aliases := range hints {
-		if !strings.Contains(question, keyword) {
-			continue
-		}
-		for _, table := range tables {
-			searchText := strings.ToLower(table.Name)
-			for _, col := range table.Columns {
-				searchText += " " + strings.ToLower(col.Name)
-			}
-			for _, alias := range aliases {
-				if strings.Contains(searchText, alias) {
-					scores[table.Name] += 12
-				}
-			}
-		}
-	}
+	_ = question
+	_ = tables
 }
 
 func renderSelectedSchema(question string, tables []schemaTable, selected []string, relations []map[string]string) string {
@@ -450,39 +401,15 @@ func isCJKRune(r rune) bool {
 
 // selectFallbackTables 从大表中用启发式规则选出常见业务表（order、sale、staff、product 等）
 func selectFallbackTables(tables []schemaTable, limit int, complexity int) []string {
-	commonPatterns := []string{"order", "sale", "profile", "staff", "employee", "user", "pay", "bill", "invoice", "work_order"}
-	if complexity >= queryComplexityDetail {
-		commonPatterns = append(commonPatterns, "order_item", "item", "detail", "customer", "address")
-	}
-	if complexity >= queryComplexityDimension {
-		commonPatterns = append(commonPatterns, "product", "goods", "sku", "category", "variant", "t_product", "t_goods")
-	}
-	scores := map[string]int{}
-	for _, table := range tables {
-		name := strings.ToLower(table.Name)
-		for _, p := range commonPatterns {
-			if strings.Contains(name, p) {
-				scores[table.Name] += 10
-			}
-		}
-		// 也检查列名中的业务术语
-		for _, col := range table.Columns {
-			colName := strings.ToLower(col.Name)
-			if strings.Contains(colName, "order") || strings.Contains(colName, "sale") ||
-				strings.Contains(colName, "staff") || strings.Contains(colName, "employee") ||
-				strings.Contains(colName, "amount") || strings.Contains(colName, "price") {
-				scores[table.Name] += 5
-			}
-		}
-	}
 	type candidate struct {
 		Name  string
 		Score int
 	}
 	var list []candidate
-	for name, score := range scores {
+	for _, table := range tables {
+		score := len(table.Columns)
 		if score > 0 {
-			list = append(list, candidate{Name: name, Score: score})
+			list = append(list, candidate{Name: table.Name, Score: score})
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Score > list[j].Score })

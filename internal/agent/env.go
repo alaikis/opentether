@@ -198,7 +198,7 @@ func (m *EnvManager) InstallDepsFromFile(ctx context.Context, envName, reqFile s
 	cmd := exec.CommandContext(ctx, m.uvBin, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("从 %s 安装依赖失败: %w\n输出: %s", err, reqFile, string(output))
+		return fmt.Errorf("从 %s 安装依赖失败: %w\n输出: %s", reqFile, err, string(output))
 	}
 
 	log.Printf("[Env] 从 %s 安装依赖完成 (环境: %s)", reqFile, envName)

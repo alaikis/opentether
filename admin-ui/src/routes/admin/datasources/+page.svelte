@@ -336,7 +336,6 @@
                             newRels.push(evt.data);
                             toast.info(
                                 `新关系: ${evt.data.from_table} -> ${evt.data.to_table}`,
-                                { duration: 3000 },
                             );
                         } else if (evt.type === "done") {
                             if (newRels.length > 0) {

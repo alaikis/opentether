@@ -104,10 +104,13 @@
 
     async function loadStats(key: keyof Stats, endpoint: string) {
         try {
-            const data = await api.get<any[]>(endpoint);
-            stats[key] = Array.isArray(data)
-                ? data.length
-                : data?.length || data?.total || 0;
+            const data = await api.get<unknown>(endpoint);
+            if (Array.isArray(data)) {
+                stats[key] = data.length;
+                return;
+            }
+            const obj = data as { length?: number; total?: number } | null;
+            stats[key] = obj?.length || obj?.total || 0;
         } catch {
             stats[key] = 0;
         }

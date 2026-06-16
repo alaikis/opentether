@@ -15,7 +15,7 @@ func newTestSkillService(t *testing.T) (*SkillService, *gorm.DB) {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Skill{}); err != nil {
+	if err := db.AutoMigrate(&models.Skill{}, &models.SkillConfigVersion{}); err != nil {
 		t.Fatalf("migrate skills: %v", err)
 	}
 
@@ -68,6 +68,44 @@ func TestSkillServiceProtectsBuiltinSkillByConfigFlag(t *testing.T) {
 
 	if _, err := svc.Update(skill.ID, UpdateSkillInput{Name: "改名", Enabled: false}); err == nil {
 		t.Fatal("expected builtin config flag update to be rejected")
+	}
+}
+
+func TestSkillServiceSnapshotsAndRestoresConfig(t *testing.T) {
+	svc, db := newTestSkillService(t)
+
+	skill, err := svc.Create(CreateSkillInput{Name: "版本 Skill", SkillType: "text2sql", Enabled: true, Config: `{"version":1}`})
+	if err != nil {
+		t.Fatalf("create skill: %v", err)
+	}
+	if _, err := svc.Update(skill.ID, UpdateSkillInput{Name: "版本 Skill", SkillType: "text2sql", Enabled: true, Config: `{"version":2}`}); err != nil {
+		t.Fatalf("update skill: %v", err)
+	}
+
+	versions, err := svc.ListConfigVersions(skill.ID, 10)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) < 2 {
+		t.Fatalf("expected at least 2 versions, got %d", len(versions))
+	}
+
+	var first models.SkillConfigVersion
+	if err := db.Where("skill_id = ? AND action = ?", skill.ID, "create").First(&first).Error; err != nil {
+		t.Fatalf("find create version: %v", err)
+	}
+	restored, err := svc.RestoreConfigVersion(skill.ID, first.ID, "tester")
+	if err != nil {
+		t.Fatalf("restore version: %v", err)
+	}
+	if restored.Config != `{"version":1}` {
+		t.Fatalf("expected restored config v1, got %s", restored.Config)
+	}
+
+	var restoreCount int64
+	db.Model(&models.SkillConfigVersion{}).Where("skill_id = ? AND action IN ?", skill.ID, []string{"restore", "restore_backup"}).Count(&restoreCount)
+	if restoreCount != 2 {
+		t.Fatalf("expected restore and backup snapshots, got %d", restoreCount)
 	}
 }
 

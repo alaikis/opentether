@@ -28,24 +28,7 @@ type routeExampleSeed struct {
 	Intent string
 }
 
-var builtinRouteExamples = []routeExampleSeed{
-	{"你好", "fast_local", "greeting"},
-	{"你是谁", "fast_local", "identity"},
-	{"帮助", "fast_local", "help"},
-	{"今天星期几", "fast_local", "date"},
-	{"林烽上季度销售额", "fast_text2sql", "employee_sales_amount"},
-	{"张三上个月订单数", "fast_text2sql", "employee_order_count"},
-	{"李四本月卖了多少单", "fast_text2sql", "employee_order_count"},
-	{"王五今年销售额多少", "fast_text2sql", "employee_sales_amount"},
-	{"什么是销售转化率", "fast_chat", "explain_metric"},
-	{"解释一下库存周转率", "fast_chat", "explain_metric"},
-	{"怎么理解毛利率", "fast_chat", "explain_metric"},
-	{"帮我生成销售报表", "agent_loop", "report"},
-	{"导出 PDF 报表", "agent_loop", "report"},
-	{"读取这个文件并总结", "agent_loop", "file_process"},
-	{"调用 MCP 工具查询文件", "agent_loop", "mcp"},
-	{"执行脚本处理数据", "agent_loop", "script"},
-}
+var builtinRouteExamples = []routeExampleSeed{}
 
 type FastPathClassifier struct {
 	db       *gorm.DB

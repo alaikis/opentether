@@ -457,25 +457,11 @@ func extractConversationFacts(text string) conversationFacts {
 	if employee := extractEmployeeName(text); employee != "" {
 		facts.Entities["employee"] = employee
 	}
-	facts.Topic = detectTopic(text)
-	facts.Metric = detectMetric(text)
-	facts.TimeRange = detectTimeRange(text)
-	facts.Intent = detectIntent(text)
+	facts.Intent = detectConversationIntent(text)
 	return facts
 }
 
 func extractEmployeeName(text string) string {
-	patterns := []string{
-		`已找到员工\s*([\p{Han}A-Za-z0-9_·]{2,20})`,
-		`员工\s*[:：]?\s*([\p{Han}A-Za-z0-9_·]{2,20})`,
-		`([\p{Han}]{2,4})(?:当前|现在|本月|上月|上个季度|上季度|这个季度|的)?(?:卖了|卖|出了|出|订单|销售额|业绩)`,
-	}
-	for _, p := range patterns {
-		re := regexp.MustCompile(p)
-		if m := re.FindStringSubmatch(text); len(m) > 1 {
-			return strings.Trim(m[1], " ，。:：-\n\t")
-		}
-	}
 	trimmed := strings.TrimSpace(text)
 	if utf8.RuneCountInString(trimmed) >= 2 && utf8.RuneCountInString(trimmed) <= 4 && regexp.MustCompile(`^[\p{Han}]+$`).MatchString(trimmed) {
 		return trimmed
@@ -483,45 +469,11 @@ func extractEmployeeName(text string) string {
 	return ""
 }
 
-func detectTopic(text string) string {
-	switch {
-	case strings.Contains(text, "订单") || strings.Contains(text, "出单") || strings.Contains(text, "销售") || strings.Contains(text, "卖"):
-		return "sales"
-	case strings.Contains(text, "库存") || strings.Contains(text, "仓库"):
-		return "inventory"
-	case strings.Contains(text, "员工") || strings.Contains(text, "部门") || strings.Contains(text, "职位"):
-		return "employee"
-	case strings.Contains(text, "客户"):
-		return "customer"
-	default:
-		return "general"
+func detectConversationIntent(text string) string {
+	if strings.Count(text, "？")+strings.Count(text, "?") > 0 {
+		return "query"
 	}
-}
-
-func detectMetric(text string) string {
-	switch {
-	case strings.Contains(text, "销售额") || strings.Contains(text, "金额"):
-		return "销售额"
-	case strings.Contains(text, "订单") || strings.Contains(text, "出单") || strings.Contains(text, "多少单"):
-		return "订单数"
-	case strings.Contains(text, "库存"):
-		return "库存"
-	default:
-		return ""
-	}
-}
-
-func detectTimeRange(text string) string {
-	for _, token := range []string{"上个季度", "上季度", "本季度", "这个季度", "上个月", "上月", "本月", "当前", "现在", "今天", "昨天", "今年", "去年"} {
-		if strings.Contains(text, token) {
-			return token
-		}
-	}
-	return ""
-}
-
-func detectIntent(text string) string {
-	if strings.Contains(text, "多少") || strings.Contains(text, "查询") || strings.Contains(text, "销售额") || strings.Contains(text, "订单") || strings.Contains(text, "卖") || strings.Contains(text, "出") {
+	if strings.Contains(text, "多少") || strings.Contains(text, "查询") {
 		return "query"
 	}
 	return "chat"

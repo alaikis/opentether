@@ -173,37 +173,20 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 		// 构建本轮消息
 		messages := e.buildLoopMessages(systemPrompt, query, loop)
 
-		// 调用 LLM 推理下一步
-		resp, err := llmClient.ChatCompletion(ctx, llm.ChatRequest{
-			Model:       provider.Model,
-			Messages:    messages,
-			MaxTokens:   512,
-			Temperature: 0.3,
-		})
-		if err != nil {
-			step := LoopStep{
-				StepID: loop.Iteration,
-				Action: "error",
-				Error:  err.Error(),
+		// 调用 LLM 推理下一步（含 AI 纠错重试，最多 20 轮）
+		resp, decision, parseErr, llmTokens := e.retryLoopDecision(ctx, llmClient, messages, provider, 20)
+		totalTokens += llmTokens
+
+		// 纠错重试全部失败后的最终兜底
+		if parseErr != nil || decision == nil || decision.Action == "" {
+			finalMsg := fallbackDecisionFromText(query).FinalAnswer
+			if resp != nil && strings.TrimSpace(resp.Content) != "" {
+				finalMsg = resp.Content
 			}
-			loop.History = append(loop.History, step)
-			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "llm_error", step)
-			e.finishRuntimeJob(runtimeJob, "failed", "", err.Error())
-			sendEvent(events, LoopEvent{Type: "error", Content: fmt.Sprintf("LLM 调用失败: %v", err)})
-			break
-		}
-
-		totalTokens += resp.Usage.TotalTokens
-
-		// 解析 LLM 决策
-		decision, parseErr := parseLoopDecision(resp.Content)
-		if parseErr != nil {
-			log.Printf("[Loop] 解析决策失败: %v, raw=%.200s", parseErr, resp.Content)
-			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "parse_error", map[string]interface{}{"error": parseErr.Error(), "raw": resp.Content})
-			e.finishRuntimeJob(runtimeJob, "failed", resp.Content, parseErr.Error())
-			sendEvent(events, LoopEvent{Type: "error", Content: fmt.Sprintf("解析决策失败: %v", parseErr)})
+			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "correction_exhausted", map[string]interface{}{"error": fmt.Sprintf("%v", parseErr)})
+			e.finishRuntimeJob(runtimeJob, "failed", finalMsg, fmt.Sprintf("%v", parseErr))
 			return &ChatResponse{
-				Message:        resp.Content,
+				Message:        finalMsg,
 				ConversationID: conversationID,
 				TokensUsed:     totalTokens,
 			}, nil
@@ -230,6 +213,11 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 			// === 经验积累：多步操作自动保存为待审核经验 ===
 			if e.experience != nil {
 				e.experience.TrySaveExperience(user.UserID, query, loop.History, totalTokens)
+			}
+
+			// === 用户习惯学习：从本次查询中学习偏好（语言、指标等）===
+			if e.memory != nil && e.memory.longTerm != nil {
+				e.memory.longTerm.LearnUserHabits(user.UserID, query, "")
 			}
 
 			return &ChatResponse{
@@ -420,6 +408,62 @@ type ConfirmOp struct {
 	Details string `json:"details"` // 操作详情
 }
 
+// retryLoopDecision wraps LLM call + JSON parse with AI-driven error correction (max 20 rounds).
+// On parse failure, it feeds the error back to the LLM and asks for a corrected response.
+func (e *AgentEngine) retryLoopDecision(ctx context.Context, llmClient llm.Client, originalMessages []llm.Message, provider *models.Provider, maxRounds int) (*llm.ChatResponse, *LoopDecision, error, int) {
+	messages := make([]llm.Message, len(originalMessages))
+	copy(messages, originalMessages)
+	totalTokens := 0
+
+	for attempt := 0; attempt < maxRounds; attempt++ {
+		resp, err := llm.ChatCompletionWithRetry(llmClient, ctx, llm.ChatRequest{
+			Model:       provider.Model,
+			Messages:    messages,
+			MaxTokens:   8192,
+			Temperature: 0.3,
+		}, 3)
+		if err != nil {
+			return nil, nil, fmt.Errorf("LLM 调用失败（重试%d次后）: %w", attempt+1, err), totalTokens
+		}
+
+		totalTokens += resp.Usage.TotalTokens
+
+		if strings.TrimSpace(resp.Content) == "" {
+			if attempt < maxRounds-1 {
+				messages = append(messages, llm.Message{Role: "user", Content: "你的响应为空，请返回有效的 JSON 决策。"})
+				continue
+			}
+			return resp, fallbackDecisionFromText(""), fmt.Errorf("空响应, 已重试 %d 次", attempt+1), totalTokens
+		}
+
+		decision, parseErr := parseLoopDecision(resp.Content)
+		if parseErr == nil && decision != nil && decision.Action != "" {
+			return resp, decision, nil, totalTokens
+		}
+
+		// AI correction: feed parse error or empty-action back to LLM
+		errMsg := fmt.Sprintf("解析失败: %v", parseErr)
+		if parseErr == nil && decision != nil && decision.Action == "" {
+			errMsg = "决策缺少 action 字段"
+		}
+		if attempt < maxRounds-1 {
+			correction := fmt.Sprintf("你上次的响应 JSON 格式无效（%s）。请修正并只返回有效的 JSON 决策对象。上次响应: %s", errMsg, truncateForLog(resp.Content, 200))
+			messages = append(messages, llm.Message{Role: "user", Content: correction})
+			continue
+		}
+		return resp, fallbackDecisionFromText(resp.Content), fmt.Errorf("解析失败, 已重试 %d 次: %s", attempt+1, errMsg), totalTokens
+	}
+	return nil, fallbackDecisionFromText(""), fmt.Errorf("已达最大纠错轮数 %d", maxRounds), totalTokens
+}
+
+func truncateForLog(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen]) + "..."
+}
+
 // parseLoopDecision 从 LLM 输出解析决策 JSON。
 // 容错策略：JSON code block → JSON 对象 → 修复截断 JSON → 纯文本 final_answer 兜底。
 func parseLoopDecision(content string) (*LoopDecision, error) {
@@ -569,12 +613,31 @@ func fallbackDecisionFromText(text string) *LoopDecision {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		text = "抱歉，本次模型响应为空或被截断，请重新尝试。"
+	} else if looksLikeToolCallLeak(text) {
+		text = "工具调用格式不完整或被截断，系统已拦截原始工具参数输出。请重试，或改为让系统直接生成图表数据。"
+	} else if clarification := EmptyQueryClarification(text); clarification != "" {
+		text = clarification
+	} else if looksLikeUserQuery(text) {
+		text = "抱歉，当前模型暂时无法回答此问题。请检查数据源和 Skill 配置是否正确，或者尝试用更简洁的方式提问。"
 	}
 	return &LoopDecision{
 		Action:      "final_answer",
 		Thought:     "模型未返回严格 JSON，已使用纯文本兜底回答。",
 		FinalAnswer: text,
 	}
+}
+
+func looksLikeToolCallLeak(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, `"action":"tool_call"`) ||
+		strings.Contains(lower, `"tool_name"`) ||
+		strings.Contains(lower, `"tool_input"`) ||
+		strings.Contains(lower, "script_content") ||
+		strings.Contains(lower, "<environment_details>")
+}
+
+func looksLikeUserQuery(text string) bool {
+	return strings.Contains(text, "？") || strings.Contains(text, "多少") || strings.Contains(text, "查询") || strings.Contains(text, "什么")
 }
 
 // getAvailableTools 从已注册的 Skill 中派生可用工具列表
@@ -821,6 +884,19 @@ func (e *AgentEngine) executeTool(ctx context.Context, user *UserContext, toolNa
 	case "employee_query":
 		// employee_query 功能已合并到 text2sql Skill，返回提示引导用户
 		return "employee_query 功能已整合到数据查询 Skill，请直接描述您的问题，如「林烽上月出了多少单」", nil
+
+	case "generate_chart":
+		dataStr, _ := input["data"].(string)
+		chartType, _ := input["chart_type"].(string)
+		chartTitle, _ := input["title"].(string)
+		if chartType == "" {
+			chartType = "line"
+		}
+		if chartTitle == "" {
+			chartTitle = "数据图表"
+		}
+		chartJSON := buildEChartsOption(chartType, chartTitle, dataStr)
+		return fmt.Sprintf("图表配置（ECharts JSON）:\n```json\n%s\n```\n请用前端 ECharts 渲染此配置。", chartJSON), nil
 
 	case "generate_pdf", "generate_report":
 		title, _ := input["title"].(string)

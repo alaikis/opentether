@@ -1107,6 +1107,32 @@ func (h *Handler) DeleteSkillRuntimeMemory(c *fiber.Ctx) error {
 	return c.SendStatus(204)
 }
 
+func (h *Handler) ListSkillConfigVersions(c *fiber.Ctx) error {
+	id := c.Params("id")
+	limit := c.QueryInt("limit", 50)
+	versions, err := h.services.Skill.ListConfigVersions(id, limit)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"versions": versions})
+}
+
+func (h *Handler) RestoreSkillConfigVersion(c *fiber.Ctx) error {
+	id := c.Params("id")
+	versionID := c.Params("version")
+	actorID, _ := c.Locals("user_id").(string)
+	skill, err := h.services.Skill.RestoreConfigVersion(id, versionID, actorID)
+	if err != nil {
+		status := fiber.StatusInternalServerError
+		if errors.Is(err, service.ErrBuiltinSkillProtected) {
+			status = fiber.StatusForbidden
+		}
+		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "restore", "skill_config", id, "恢复 Skill 配置版本")
+	return c.JSON(skill)
+}
+
 // GetSkillContextMD 获取 Skill 上下文 MD 文档
 func (h *Handler) GetSkillContextMD(c *fiber.Ctx) error {
 	id := c.Params("id")
@@ -1256,6 +1282,47 @@ func (h *Handler) CreateMCPConfig(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "config": config})
 }
 
+// UpdateMCPConfig 更新 MCP 配置
+func (h *Handler) UpdateMCPConfig(c *fiber.Ctx) error {
+	id := c.Params("id")
+	type MCPConfigInput struct {
+		Name    string `json:"name"`
+		Command string `json:"command"`
+		Args    string `json:"args"`
+		Env     string `json:"env"`
+		Enabled bool   `json:"enabled"`
+	}
+
+	var input MCPConfigInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	config, err := h.services.MCP.UpdateConfig(id, service.MCPConfig{
+		Name:    input.Name,
+		Command: input.Command,
+		Args:    input.Args,
+		Env:     input.Env,
+		Enabled: input.Enabled,
+	})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	h.audit(c, "update", "mcp_config", id, "更新 MCP 配置")
+	return c.JSON(fiber.Map{"success": true, "config": config})
+}
+
+// DeleteMCPConfig 删除 MCP 配置
+func (h *Handler) DeleteMCPConfig(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if err := h.services.MCP.DeleteConfig(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "delete", "mcp_config", id, "删除 MCP 配置")
+	return c.SendStatus(204)
+}
+
 // StartMCPServer 启动 MCP 服务器
 func (h *Handler) StartMCPServer(c *fiber.Ctx) error {
 	id := c.Params("id")
@@ -1338,6 +1405,104 @@ func (h *Handler) CallMCPTool(c *fiber.Ctx) error {
 		"success": true,
 		"result":  string(result),
 	})
+}
+
+// Soul handlers
+func (h *Handler) GetUserSoul(c *fiber.Ctx) error {
+	userID := c.Params("id")
+	if userID == "" || userID == "self" {
+		userID = middleware.GetUserID(c)
+	}
+	if userID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing user id"})
+	}
+	return c.JSON(h.services.Soul.GetUserSoul(userID))
+}
+
+func (h *Handler) UpdateUserSoul(c *fiber.Ctx) error {
+	userID := c.Params("id")
+	if userID == "" || userID == "self" {
+		userID = middleware.GetUserID(c)
+	}
+	if userID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing user id"})
+	}
+	type Request struct {
+		Persona     string `json:"persona"`
+		Human       string `json:"human"`
+		Preferences string `json:"preferences"`
+	}
+	var input Request
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := h.services.Soul.UpsertUserSoul(userID, input.Persona, input.Human, input.Preferences); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "update", "user_soul", userID, "更新用户 Soul")
+	return c.JSON(fiber.Map{"success": true, "soul": h.services.Soul.GetUserSoul(userID)})
+}
+
+func (h *Handler) GetCompanySoul(c *fiber.Ctx) error {
+	soul := h.services.Soul.GetCompanySoul()
+	if soul == nil {
+		return c.JSON(fiber.Map{"name": "", "persona": "", "brand_tone": "", "industry": ""})
+	}
+	return c.JSON(soul)
+}
+
+func (h *Handler) UpdateCompanySoul(c *fiber.Ctx) error {
+	type Request struct {
+		Name      string `json:"name"`
+		Persona   string `json:"persona"`
+		BrandTone string `json:"brand_tone"`
+		Industry  string `json:"industry"`
+	}
+	var input Request
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := h.services.Soul.UpsertCompanySoul(input.Name, input.Persona, input.BrandTone, input.Industry); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "update", "company_soul", "company", "更新公司 Soul")
+	return c.JSON(fiber.Map{"success": true, "soul": h.services.Soul.GetCompanySoul()})
+}
+
+func (h *Handler) ListUserMemories(c *fiber.Ctx) error {
+	userID := c.Params("id")
+	if userID == "" || userID == "self" {
+		userID = middleware.GetUserID(c)
+	}
+	if userID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing user id"})
+	}
+	memories, err := h.services.Soul.ListUserMemories(userID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(memories)
+}
+
+func (h *Handler) ListGroupMemories(c *fiber.Ctx) error {
+	groupID := c.Params("id")
+	if groupID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing group id"})
+	}
+	memories, err := h.services.Soul.ListGroupMemories(groupID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(memories)
+}
+
+func (h *Handler) DeleteMemory(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if err := h.services.Soul.DeleteMemory(id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.audit(c, "delete", "memory", id, "删除记忆")
+	return c.SendStatus(204)
 }
 
 // ============================================
@@ -1636,6 +1801,11 @@ func (h *Handler) ConfirmIMBinding(c *fiber.Ctx) error {
 		"message":  "IM 绑定成功",
 		"platform": binding.ImConfigID,
 	})
+}
+
+// GetSystemReadiness 获取私有部署就绪报告
+func (h *Handler) GetSystemReadiness(c *fiber.Ctx) error {
+	return c.JSON(h.services.Readiness.Report(c.UserContext()))
 }
 
 // GetSystemConfig 获取系统配置

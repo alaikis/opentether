@@ -47,7 +47,7 @@
         message = "";
         error = "";
         try {
-            const result = await api.put("/admin/system/config", config);
+            const result = await api.put<{ message?: string }>("/admin/system/config", config);
             message = result.message || "配置已保存";
         } catch (e: any) {
             error = e.message;

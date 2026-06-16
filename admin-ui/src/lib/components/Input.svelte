@@ -32,6 +32,7 @@
         {disabled}
         on:input={handleInput}
         on:blur
+        on:keydown
         class={cn(
             "w-full px-3 py-2 border rounded-lg text-sm transition-all duration-200",
             "focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400",

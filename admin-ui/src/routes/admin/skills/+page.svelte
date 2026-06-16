@@ -100,12 +100,19 @@
     let formEntityRules: EntityRule[] = [];
     let formBusinessRules = "";
     let formContextMD = "";
+    let formFullAccessGroups = "";
+    let mdPreview = false;
+    let showMDVersions = false;
+    let configVersions: any[] = [];
+    let loadingVersions = false;
+    let restoringVersion = false;
     let activeText2SQLTab:
         | "basic"
         | "relations"
         | "rules"
         | "boundary"
         | "doc" = "basic";
+    let activeRulesTab: "metric" | "entity" = "metric";
     let generatingAI = false;
     let datasources: DataSource[] = [];
     let userGroups: UserGroup[] = [];
@@ -172,6 +179,42 @@
             datasources = data.datasources || data || [];
         } catch {}
     }
+    function renderMD(text: string): string {
+        if (!text) return "";
+        let html = text
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/### (.+)/g, '<h3 class="text-base font-bold mt-3 mb-1">$1</h3>')
+            .replace(/## (.+)/g, '<h2 class="text-lg font-bold mt-4 mb-2">$1</h2>')
+            .replace(/# (.+)/g, '<h1 class="text-xl font-bold mt-4 mb-2">$1</h1>')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/`([^`]+)`/g, '<code class="bg-slate-100 px-1 rounded text-xs">$1</code>')
+            .replace(/^- (.+)/gm, '<li class="ml-4 list-disc text-xs">$1</li>')
+            .replace(/\n/g, '<br>');
+        return html;
+    }
+    async function loadConfigVersions() {
+        if (!editingSkill) return;
+        loadingVersions = true;
+        try {
+            const data = await api.get<any>(`/admin/skills/${editingSkill.id}/config-versions?limit=20`);
+            configVersions = data.versions || [];
+        } catch { configVersions = []; }
+        finally { loadingVersions = false; }
+    }
+    async function restoreConfigVersion(version: any) {
+        if (!editingSkill || !version) return;
+        if (!confirm(`恢复到版本 ${version.version} 将覆盖当前配置。确定？`)) return;
+        restoringVersion = true;
+        try {
+            await api.post(`/admin/skills/${editingSkill.id}/config-versions/${version.id}/restore`);
+            toast.success("已恢复到版本 " + version.version);
+            showMDVersions = false;
+            await loadSkills();
+            closeModal();
+        } catch (e: any) {
+            toast.error(e.message || "恢复失败");
+        } finally { restoringVersion = false; }
+    }
     function openAddModal() {
         editingSkill = null;
         formName = "";
@@ -202,6 +245,7 @@
             formBusinessRules = cfg.business_rules || "";
             formContextMD = cfg.context_md || "";
             loadText2SQLConfig(cfg);
+            loadContextMDForEditor(s.id);
         } catch {
             formDataSourceID = "";
             resetText2SQLConfig();
@@ -209,6 +253,15 @@
         loadDataSources();
         showModal = true;
     }
+    async function loadContextMDForEditor(skillID: string) {
+        try {
+            const data = await api.get<any>(`/admin/skills/${skillID}/context-md`);
+            if (data?.content) {
+                formContextMD = data.content;
+            }
+        } catch {}
+    }
+
     function closeModal() {
         showModal = false;
         editingSkill = null;
@@ -1034,106 +1087,72 @@
                 {/if}
 
                 {#if activeText2SQLTab === "rules"}
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                        <div class="bg-white rounded-lg border p-3">
-                            <div class="flex items-center justify-between mb-2">
-                                <label
-                                    class="text-xs font-semibold text-slate-600"
-                                    >指标规则</label
-                                ><button
-                                    class="text-xs text-primary-600"
-                                    on:click={addMetricRule}>+ 添加</button
-                                >
-                            </div>
-                            {#each formMetricRules as r, i}
-                                <div
-                                    class="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-1 items-center mb-2"
-                                >
-                                    <input
-                                        class="px-2 py-1 border rounded text-xs"
-                                        placeholder="指标名"
-                                        bind:value={r.metric}
-                                    />
-                                    <select
-                                        class="px-2 py-1 border rounded text-xs"
-                                        bind:value={r.entry_table}
-                                        ><option value="">入口表</option
-                                        >{#each selectedTablesList as t}<option
-                                                value={t.name}>{t.name}</option
-                                            >{/each}</select
-                                    >
-                                    <input
-                                        class="px-2 py-1 border rounded text-xs"
-                                        placeholder="聚合"
-                                        bind:value={r.aggregation}
-                                    />
-                                    <select
-                                        class="px-2 py-1 border rounded text-xs"
-                                        bind:value={r.time_field}
-                                        ><option value="">时间字段</option
-                                        >{#each boundaryColumns(r.entry_table) as c}<option
-                                                value={c.name}>{c.name}</option
-                                            >{/each}</select
-                                    >
-                                    <button
-                                        class="text-red-400"
-                                        on:click={() => removeMetricRule(i)}
-                                        >×</button
-                                    >
-                                </div>
-                            {/each}
+                    <div class="space-y-3">
+                        <div class="inline-flex bg-slate-100 rounded-lg p-1">
+                            <button
+                                class="px-3 py-1.5 rounded-md text-xs font-medium {activeRulesTab === 'metric' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}"
+                                on:click={() => (activeRulesTab = "metric")}
+                            >指标规则</button>
+                            <button
+                                class="px-3 py-1.5 rounded-md text-xs font-medium {activeRulesTab === 'entity' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}"
+                                on:click={() => (activeRulesTab = "entity")}
+                            >实体规则</button>
                         </div>
-                        <div class="bg-white rounded-lg border p-3">
-                            <div class="flex items-center justify-between mb-2">
-                                <label
-                                    class="text-xs font-semibold text-slate-600"
-                                    >实体规则</label
-                                ><button
-                                    class="text-xs text-primary-600"
-                                    on:click={addEntityRule}>+ 添加</button
-                                >
-                            </div>
-                            {#each formEntityRules as r, i}
-                                <div
-                                    class="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-1 items-center mb-2"
-                                >
-                                    <input
-                                        class="px-2 py-1 border rounded text-xs"
-                                        placeholder="实体"
-                                        bind:value={r.entity}
-                                    />
-                                    <select
-                                        class="px-2 py-1 border rounded text-xs"
-                                        bind:value={r.table}
-                                        ><option value="">实体表</option
-                                        >{#each selectedTablesList as t}<option
-                                                value={t.name}>{t.name}</option
-                                            >{/each}</select
-                                    >
-                                    <select
-                                        class="px-2 py-1 border rounded text-xs"
-                                        bind:value={r.name_field}
-                                        ><option value="">名称字段</option
-                                        >{#each boundaryColumns(r.table) as c}<option
-                                                value={c.name}>{c.name}</option
-                                            >{/each}</select
-                                    >
-                                    <select
-                                        class="px-2 py-1 border rounded text-xs"
-                                        bind:value={r.join_field}
-                                        ><option value="">关联字段</option
-                                        >{#each boundaryColumns(r.table) as c}<option
-                                                value={c.name}>{c.name}</option
-                                            >{/each}</select
-                                    >
-                                    <button
-                                        class="text-red-400"
-                                        on:click={() => removeEntityRule(i)}
-                                        >×</button
-                                    >
+
+                        {#if activeRulesTab === "metric"}
+                            <div class="bg-white rounded-lg border p-3">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="text-xs font-semibold text-slate-600">指标规则</label>
+                                    <button class="text-xs text-primary-600" on:click={addMetricRule}>+ 添加</button>
                                 </div>
-                            {/each}
-                        </div>
+                                <div class="space-y-2">
+                                    {#each formMetricRules as r, i}
+                                        <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.4fr_1fr_auto] gap-2 items-center bg-slate-50 p-2 rounded-lg">
+                                            <input class="px-2 py-1 border rounded text-xs" placeholder="指标名" bind:value={r.metric} />
+                                            <select class="px-2 py-1 border rounded text-xs" bind:value={r.entry_table}>
+                                                <option value="">入口表</option>
+                                                {#each selectedTablesList as t}<option value={t.name}>{t.name}</option>{/each}
+                                            </select>
+                                            <input class="px-2 py-1 border rounded text-xs" placeholder="聚合表达式，如 COUNT(DISTINCT id)" bind:value={r.aggregation} />
+                                            <select class="px-2 py-1 border rounded text-xs" bind:value={r.time_field}>
+                                                <option value="">时间字段</option>
+                                                {#each boundaryColumns(r.entry_table) as c}<option value={c.name}>{c.name}</option>{/each}
+                                            </select>
+                                            <button class="text-red-400" on:click={() => removeMetricRule(i)}>×</button>
+                                        </div>
+                                    {/each}
+                                </div>
+                            </div>
+                        {/if}
+
+                        {#if activeRulesTab === "entity"}
+                            <div class="bg-white rounded-lg border p-3">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="text-xs font-semibold text-slate-600">实体规则</label>
+                                    <button class="text-xs text-primary-600" on:click={addEntityRule}>+ 添加</button>
+                                </div>
+                                <div class="space-y-2">
+                                    {#each formEntityRules as r, i}
+                                        <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 items-center bg-slate-50 p-2 rounded-lg">
+                                            <input class="px-2 py-1 border rounded text-xs" placeholder="实体，如 员工/客户/产品" bind:value={r.entity} />
+                                            <select class="px-2 py-1 border rounded text-xs" bind:value={r.table}>
+                                                <option value="">实体表</option>
+                                                {#each selectedTablesList as t}<option value={t.name}>{t.name}</option>{/each}
+                                            </select>
+                                            <select class="px-2 py-1 border rounded text-xs" bind:value={r.name_field}>
+                                                <option value="">名称字段</option>
+                                                {#each boundaryColumns(r.table) as c}<option value={c.name}>{c.name}</option>{/each}
+                                            </select>
+                                            <select class="px-2 py-1 border rounded text-xs" bind:value={r.join_field}>
+                                                <option value="">关联字段</option>
+                                                {#each boundaryColumns(r.table) as c}<option value={c.name}>{c.name}</option>{/each}
+                                            </select>
+                                            <button class="text-red-400" on:click={() => removeEntityRule(i)}>×</button>
+                                        </div>
+                                    {/each}
+                                </div>
+                            </div>
+                        {/if}
                     </div>
                 {/if}
 
@@ -1270,28 +1289,46 @@
                 {#if activeText2SQLTab === "doc"}
                     <div class="space-y-3">
                         <div>
-                            <label
-                                class="block text-xs font-semibold text-slate-600 mb-1"
-                                >业务口径</label
-                            >
-                            <textarea
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs resize-none"
-                                rows="3"
-                                bind:value={formBusinessRules}
-                                placeholder="如：销售额按 pay_amount 统计"
-                            />
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">业务口径</label>
+                            <textarea class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs resize-none" rows="3" bind:value={formBusinessRules} placeholder="如：销售额按 pay_amount 统计" />
                         </div>
                         <div>
-                            <label
-                                class="block text-xs font-semibold text-slate-600 mb-1"
-                                >MD 上下文</label
-                            >
-                            <textarea
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono"
-                                rows="6"
-                                bind:value={formContextMD}
-                                placeholder="点击生成 MD，或直接粘贴上下文文档"
-                            />
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold text-slate-600">MD 上下文</label>
+                                <div class="flex gap-1">
+                                    <button class="text-xs px-2 py-0.5 rounded {mdPreview ? 'bg-slate-100' : 'bg-primary-50 text-primary-700'}" on:click={() => (mdPreview = false)}>编辑</button>
+                                    <button class="text-xs px-2 py-0.5 rounded {mdPreview ? 'bg-primary-50 text-primary-700' : 'bg-slate-100'}" on:click={() => (mdPreview = true)}>预览</button>
+                                    {#if editingSkill}
+                                        <button class="text-xs px-2 py-0.5 rounded bg-slate-100" on:click={() => { showMDVersions = !showMDVersions; if (showMDVersions) loadConfigVersions(); }}>版本</button>
+                                    {/if}
+                                </div>
+                            </div>
+                            {#if mdPreview}
+                                <div class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white min-h-[200px] max-h-[350px] overflow-y-auto">{@html renderMD(formContextMD)}</div>
+                            {:else}
+                                <textarea class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono" rows="10" bind:value={formContextMD} placeholder="点击生成 MD，或直接粘贴上下文文档" />
+                            {/if}
+                        </div>
+                        {#if showMDVersions}
+                            <div class="bg-slate-50 rounded-lg border p-3 max-h-[180px] overflow-y-auto">
+                                <div class="text-xs font-semibold text-slate-600 mb-2">配置版本历史</div>
+                                {#if loadingVersions}
+                                    <div class="text-xs text-slate-400">加载中...</div>
+                                {:else if configVersions.length === 0}
+                                    <div class="text-xs text-slate-400">暂无版本记录</div>
+                                {:else}
+                                    {#each configVersions as v}
+                                        <div class="flex items-center justify-between py-1 border-b border-slate-100 last:border-0">
+                                            <div class="text-xs"><span class="font-mono text-slate-600">{v.version}</span><span class="text-slate-400 ml-2">{v.action}</span></div>
+                                            <button class="text-xs text-primary-600 hover:underline" on:click={() => restoreConfigVersion(v)} disabled={restoringVersion}>恢复</button>
+                                        </div>
+                                    {/each}
+                                {/if}
+                            </div>
+                        {/if}
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">全量数据权限组</label>
+                            <input class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs" bind:value={formFullAccessGroups} placeholder="组ID/Code/Name, 逗号分隔。如: admin, sales_manager" />
                         </div>
                     </div>
                 {/if}

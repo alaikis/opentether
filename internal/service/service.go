@@ -31,6 +31,13 @@ type Services struct {
 	SQLAudit      *SQLAuditService          // SQL 审计
 	Soul          *SoulService              // Soul/记忆管理
 	Storage       storage.Driver            // 对象存储
+	Readiness     *ReadinessService         // 私有部署就绪检查
+	// === 报表引擎 ===
+	ReportEngine   *ReportEngineService   // 完整报表引擎
+	ChartRenderer  *ChartRendererService  // 图表渲染
+	ReportDelivery *ReportDeliveryService // 报表投递
+	// === 配置自动建议 ===
+	ConfigSuggest *ConfigSuggestService // 配置自动建议生成器
 }
 
 func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Services {
@@ -38,6 +45,10 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 	skillSvc := NewSkillService(db, cfg.Server.Mode == "development", store)
 	agentSvc := NewAgentService(db, cfg, store)
 	agentSvc.SetMCPProvider(mcp)
+	// 路由样本被拒绝后立即通知分类器重载
+	skillSvc.SetClassifierReloadCallback(func() {
+		agentSvc.ReloadFastPathClassifier()
+	})
 	go mcp.StartEnabledServers()
 	go skillSvc.ValidateContextMDFiles()
 	go func() {
@@ -68,6 +79,13 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 		SQLAudit:      NewSQLAuditService(db),
 		Soul:          NewSoulService(db, store),
 		Storage:       store,
+		Readiness:     NewReadinessService(db, cfg, store),
+		// 报表引擎
+		ReportEngine:   NewReportEngineService(db, store),
+		ChartRenderer:  NewChartRendererService(),
+		ReportDelivery: NewReportDeliveryService(cfg, store),
+		// 配置建议
+		ConfigSuggest: NewConfigSuggestService(db, cfg, store),
 	}
 }
 

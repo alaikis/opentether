@@ -130,6 +130,50 @@ func (s *MCPService) GetConfigs() ([]MCPConfig, error) {
 	return configs, err
 }
 
+// UpdateConfig 更新 MCP 配置
+func (s *MCPService) UpdateConfig(id string, config MCPConfig) (*MCPConfig, error) {
+	var existing MCPConfig
+	if err := s.db.Where("id = ?", id).First(&existing).Error; err != nil {
+		return nil, err
+	}
+
+	wasRunning := false
+	s.mu.RLock()
+	if server, ok := s.servers[id]; ok && server.Status == "running" {
+		wasRunning = true
+	}
+	s.mu.RUnlock()
+	if wasRunning {
+		if err := s.StopServer(id); err != nil {
+			return nil, err
+		}
+	}
+
+	updates := map[string]interface{}{
+		"name":    config.Name,
+		"command": config.Command,
+		"args":    config.Args,
+		"env":     config.Env,
+		"enabled": config.Enabled,
+		"status":  "stopped",
+	}
+	if err := s.db.Model(&existing).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	if err := s.db.Where("id = ?", id).First(&existing).Error; err != nil {
+		return nil, err
+	}
+	return &existing, nil
+}
+
+// DeleteConfig 删除 MCP 配置
+func (s *MCPService) DeleteConfig(id string) error {
+	if err := s.StopServer(id); err != nil {
+		return err
+	}
+	return s.db.Delete(&MCPConfig{}, "id = ?", id).Error
+}
+
 // StartServer 启动 MCP 服务器
 func (s *MCPService) StartServer(configID string) error {
 	var config MCPConfig

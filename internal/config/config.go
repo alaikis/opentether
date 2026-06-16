@@ -171,7 +171,7 @@ func Load() *Config {
 			},
 			RateLimit: RateLimitConfig{
 				Enabled:           true,
-				RequestsPerMinute: 60,
+				RequestsPerMinute: 600,
 			},
 			CORS: CORSConfig{
 				AllowedOrigins: []string{"*"},
@@ -222,6 +222,7 @@ func Load() *Config {
 		if err != nil {
 			return cfg
 		}
+		data = []byte(os.ExpandEnv(string(data)))
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return cfg
 		}
@@ -248,6 +249,8 @@ func LoadFromFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	data = []byte(os.ExpandEnv(string(data)))
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {

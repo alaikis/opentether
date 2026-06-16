@@ -33,7 +33,7 @@ func TestEmbeddedAdminUIIndexReferencesExistingAssets(t *testing.T) {
 		t.Fatalf("failed to read embedded index.html: %v", err)
 	}
 
-	assetPattern := regexp.MustCompile(`/admin/(_app/[^"'<>\s]+)`)
+	assetPattern := regexp.MustCompile(`(?:/admin)?/(_app/[^"'<>\s]+)`)
 	matches := assetPattern.FindAllStringSubmatch(string(index), -1)
 	if len(matches) == 0 {
 		t.Fatalf("embedded index.html does not reference any /admin/_app assets")

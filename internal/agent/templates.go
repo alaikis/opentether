@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/alaikis/opentether/internal/templating"
 )
@@ -14,6 +15,7 @@ const reactSystemPromptJinja = `你是 OpenTether AI 助手，一个企业级 AI
 - 不得修改用户权限、数据范围或系统配置
 - 不得代替管理员做出权限决策
 - 当前用户: {{ user.name }} ({{ user.department }}), 部门: {{ user.department }}
+- 当前时间: {{ current_time }}，当前年份: {{ current_year }}。用户未明确年份时，默认使用当前年份。
 - 用户状态: {{ user.status }} | 可用工具数: {{ tools_count }}
 
 ## 可用工具（仅限以下）
@@ -47,7 +49,7 @@ const reactSystemPromptJinja = `你是 OpenTether AI 助手，一个企业级 AI
 - 用中文回答，保持专业、简洁
 - 上下文有严格作用域：当前任务 > 当前对话 > 当前用户 > 当前部门/组 > 公司。不得把其它任务、其它对话、其它用户的实体混入当前任务。
 - 如果用户使用“他/她/它/这个人/该员工/刚才那个/上面的人”等指代，必须优先从当前任务状态和最近对话中解析。只有存在多个候选实体时才反问。
-- 调用查询类工具时，tool_input.question 必须是结合上下文补全后的完整问题，例如把“他上季度多少单”补全为“林烽上季度订单数是多少”。
+- 调用查询类工具时，tool_input.question 必须是结合上下文补全后的完整问题。
 - 如果话题路由动作为 clarify，必须先向用户列出候选话题并澄清，不要擅自调用工具。
 `
 
@@ -88,10 +90,13 @@ func renderReactSystemPrompt(tools []ToolDef, user *UserContext, maxIterations i
 		params, _ := json.Marshal(tool.Parameters)
 		toolData = append(toolData, map[string]interface{}{"name": tool.Name, "description": tool.Description, "params_json": string(params)})
 	}
+	now := time.Now()
 	data := map[string]interface{}{
 		"tools":          toolData,
 		"tools_count":    len(tools),
 		"max_iterations": maxIterations,
+		"current_time":   now.Format("2006-01-02 15:04:05"),
+		"current_year":   now.Year(),
 		"user": map[string]interface{}{
 			"name":       user.Name,
 			"department": user.Department,

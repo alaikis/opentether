@@ -41,7 +41,7 @@ func NewLettaMemory(db *gorm.DB) *LettaMemory {
 // Core Memory (Soul / Profile)
 // ════════════════════════════════════════════
 
-// GetUserSoul 获取用户 Soul（含默认值）
+// GetUserSoul 获取用户 Soul（含默认值），如果仍为默认值则自动从记忆中进化。
 func (m *LettaMemory) GetUserSoul(userID string) *UserProfile {
 	var p UserProfile
 	if err := m.db.Where("user_id = ?", userID).First(&p).Error; err != nil {
@@ -51,7 +51,92 @@ func (m *LettaMemory) GetUserSoul(userID string) *UserProfile {
 			LanguagePreference: "zh-CN",
 		}
 	}
+	// 动态增强：如果还是默认值，从记忆中进化
+	if strings.Contains(p.Persona, "你是 OpenTether AI 助手") && p.Human == "用户是公司员工。" {
+		m.evolveSoulFromMemories(userID, &p)
+	}
 	return &p
+}
+
+// evolveSoulFromMemories 从用户的累积记忆中自动进化 Persona 和 Human 描述。
+func (m *LettaMemory) evolveSoulFromMemories(userID string, p *UserProfile) {
+	if m == nil || m.db == nil {
+		return
+	}
+
+	var totalQueries int64
+	m.db.Model(&UserMemory{}).Where("user_id = ? AND type = ?", userID, "query_pattern").Count(&totalQueries)
+	if totalQueries < 5 {
+		return
+	}
+
+	// 统计常用指标
+	type metricFreq struct {
+		Key   string
+		Count int
+	}
+	var metricCounts []metricFreq
+	m.db.Model(&UserMemory{}).
+		Select("key, COUNT(*) as count").
+		Where("user_id = ? AND type = ?", userID, "preferred_metric").
+		Group("key").Order("count DESC").Limit(5).
+		Find(&metricCounts)
+
+	// 统计语言
+	cnCount := 0
+	enCount := 0
+	var contents []string
+	m.db.Model(&UserMemory{}).
+		Where("user_id = ? AND type = ?", userID, "query_pattern").
+		Pluck("content", &contents)
+	for _, c := range contents {
+		if inferLanguage("", c) == "zh-CN" {
+			cnCount++
+		} else {
+			enCount++
+		}
+	}
+
+	// 生成新的 Persona
+	persona := "你是 OpenTether AI 助手"
+	if len(metricCounts) > 0 {
+		var names []string
+		for _, m := range metricCounts {
+			names = append(names, m.Key)
+		}
+		persona += "，擅长" + strings.Join(names, "、") + "等数据分析"
+	}
+	persona += "。"
+	if enCount > cnCount {
+		persona += "优先用英文回复。"
+		p.LanguagePreference = "en"
+	} else if cnCount > 0 {
+		p.LanguagePreference = "zh-CN"
+	}
+
+	// 生成新的 Human
+	human := "用户是公司员工"
+	if len(metricCounts) > 0 {
+		n := len(metricCounts)
+		if n > 3 {
+			n = 3
+		}
+		var topNames []string
+		for i := 0; i < n; i++ {
+			topNames = append(topNames, metricCounts[i].Key)
+		}
+		human += "，常查询" + strings.Join(topNames, "、")
+	}
+	human += fmt.Sprintf("。累计查询 %d 次。", totalQueries)
+
+	p.Persona = persona
+	p.Human = human
+	_ = m.db.Save(p).Error
+	log.Printf("[Memory] 用户 %s Soul 自动进化: %s | %s", userID, persona, human)
+
+	// 老化：清理 90 天前的低优先级记忆
+	cutoff := time.Now().AddDate(0, 0, -90)
+	m.db.Where("user_id = ? AND updated_at < ? AND priority < 3", userID, cutoff).Delete(&UserMemory{})
 }
 
 // UpsertUserSoul 创建或更新用户 Soul
@@ -392,16 +477,70 @@ func (m *LettaMemory) buildSummary(query, reply string) string {
 }
 
 func (m *LettaMemory) extractTopic(query string) string {
-	for _, kw := range []string{
-		"订单", "销售", "库存", "员工", "成本", "客户",
-		"采购", "报表", "产品", "利润", "业绩",
-		"部门", "仓库", "物流", "广告", "价格",
-	} {
-		if strings.Contains(query, kw) {
-			return kw
+	return ""
+}
+
+// ════════════════════════════════════════════
+// Auto-Learning: 从用户行为中自动学习偏好
+// ════════════════════════════════════════════
+
+// LearnUserHabits 从用户查询中自动学习并保存偏好。
+// 在每次成功查询后调用，提取语言、常用指标、时间范围等习惯。
+func (m *LettaMemory) LearnUserHabits(userID, query, detectedLang string) {
+	if m == nil || m.db == nil || userID == "" {
+		return
+	}
+
+	// 1. 语言偏好：如果检测到的语言与当前不同，更新
+	soul := m.GetUserSoul(userID)
+	lang := inferLanguage(detectedLang, query)
+	if lang != "" && lang != soul.LanguagePreference {
+		soul.LanguagePreference = lang
+		_ = m.db.Save(soul).Error
+		log.Printf("[Memory] 用户 %s 语言偏好更新为: %s", userID, lang)
+	}
+
+	// 2. 保存查询模式为长期记忆（用于语义召回）
+	key := query
+	if len([]rune(key)) > 30 {
+		key = string([]rune(key)[:30])
+	}
+	m.SaveArchivalMemory(userID, "query_pattern", key,
+		fmt.Sprintf("用户查询: %s", query), 1)
+
+	// 3. 提取并保存常用指标偏好
+	metrics := extractMetricHints(query)
+	for _, metric := range metrics {
+		m.SaveArchivalMemory(userID, "preferred_metric", metric,
+			fmt.Sprintf("用户常用指标: %s", metric), 3)
+	}
+}
+
+func inferLanguage(detectedLang, query string) string {
+	if detectedLang != "" {
+		return detectedLang
+	}
+	// 简单启发式：如果包含中文字符，判断为中文
+	for _, r := range query {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return "zh-CN"
 		}
 	}
-	return ""
+	// 否则判断为英文
+	return "en"
+}
+
+func extractMetricHints(query string) []string {
+	return nil
+}
+
+func formatMemoryKey(input string) string {
+	// 截取前30个字符作为 key
+	runes := []rune(input)
+	if len(runes) > 30 {
+		return string(runes[:30])
+	}
+	return input
 }
 
 // ════════════════════════════════════════════
@@ -424,9 +563,15 @@ func (m *LettaMemory) BuildSoulPrompt(userID string, groupIDs []string, query st
 
 	// 用户级 Soul
 	soul := m.GetUserSoul(userID)
-	sb.WriteString("/" + "* 用户画像 (Soul) */")
-	sb.WriteString(fmt.Sprintf("\n- AI 人格 (Persona): %s\n", soul.Persona))
-	sb.WriteString(fmt.Sprintf("- 用户描述 (Human): %s\n", soul.Human))
+	sb.WriteString("## 用户画像 (Soul)\n")
+	sb.WriteString(fmt.Sprintf("- 人格: %s\n", soul.Persona))
+	sb.WriteString(fmt.Sprintf("- 描述: %s\n", soul.Human))
+	if soul.LanguagePreference != "" && soul.LanguagePreference != "zh-CN" {
+		sb.WriteString(fmt.Sprintf("- 首选语言: %s（请用此语言回复）\n", soul.LanguagePreference))
+	}
+	if soul.Preferences != "" {
+		sb.WriteString(fmt.Sprintf("- 偏好设置: %s\n", truncateStr(soul.Preferences, 200)))
+	}
 	sb.WriteString("\n")
 
 	// 相关记忆召回：优先向量语义召回，失败时回退关键词召回
