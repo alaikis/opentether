@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,11 +131,18 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 		}
 	}
 
-	// 获取可用工具列表（受用户权限限制）
-	availableTools := e.getAvailableTools(user)
+	// 获取可用工具列表（受用户权限限制），并按当前任务裁剪 Prompt 工具上下文
+	allTools := e.getAvailableTools(user)
+	availableTools := selectRelevantTools(query, allTools, 8)
 	toolNames := make(map[string]bool)
-	for _, t := range availableTools {
+	for _, t := range allTools {
 		toolNames[t.Name] = true
+	}
+
+	if sid, ok := user.Context["selected_skill_id"].(string); ok && sid != "" {
+		if resp, ok := e.executeSelectedSkillDirect(ctx, user, sid, query, conversationID, loop.StartTime); ok {
+			return resp, nil
+		}
 	}
 
 	// 构建系统 prompt（含可用工具描述 + 边界约束 + 长期记忆 + 当前问题召回）
@@ -173,8 +181,8 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 		// 构建本轮消息
 		messages := e.buildLoopMessages(systemPrompt, query, loop)
 
-		// 调用 LLM 推理下一步（含 AI 纠错重试，最多 20 轮）
-		resp, decision, parseErr, llmTokens := e.retryLoopDecision(ctx, llmClient, messages, provider, 20)
+		// 调用 LLM 推理下一步（含 AI 纠错重试，最多 5 轮，避免编排链路过重）
+		resp, decision, parseErr, llmTokens := e.retryLoopDecision(ctx, llmClient, messages, provider, 5)
 		totalTokens += llmTokens
 
 		// 纠错重试全部失败后的最终兜底
@@ -226,8 +234,10 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 				SkillUsed:      "agent_loop",
 				TokensUsed:     totalTokens,
 				Data: map[string]interface{}{
-					"iterations": loop.Iteration + 1,
-					"history":    loop.History,
+					"iterations":  loop.Iteration + 1,
+					"history":     loop.History,
+					"duration_ms": time.Since(loop.StartTime).Milliseconds(),
+					"path":        "agent_loop",
 				},
 			}, nil
 
@@ -419,7 +429,7 @@ func (e *AgentEngine) retryLoopDecision(ctx context.Context, llmClient llm.Clien
 		resp, err := llm.ChatCompletionWithRetry(llmClient, ctx, llm.ChatRequest{
 			Model:       provider.Model,
 			Messages:    messages,
-			MaxTokens:   8192,
+			MaxTokens:   4096,
 			Temperature: 0.3,
 		}, 3)
 		if err != nil {
@@ -640,6 +650,57 @@ func looksLikeUserQuery(text string) bool {
 	return strings.Contains(text, "？") || strings.Contains(text, "多少") || strings.Contains(text, "查询") || strings.Contains(text, "什么")
 }
 
+func selectRelevantTools(query string, tools []ToolDef, limit int) []ToolDef {
+	if limit <= 0 || len(tools) <= limit {
+		return compactTools(tools)
+	}
+	queryLower := strings.ToLower(query)
+	type scoredTool struct {
+		tool  ToolDef
+		score int
+		idx   int
+	}
+	scored := make([]scoredTool, 0, len(tools))
+	for i, tool := range tools {
+		score := 0
+		text := strings.ToLower(tool.Name + " " + tool.Description)
+		for _, token := range strings.Fields(queryLower) {
+			if len([]rune(token)) >= 2 && strings.Contains(text, token) {
+				score += 3
+			}
+		}
+		if strings.Contains(tool.Name, "skill__") {
+			score += 2
+		}
+		if strings.Contains(strings.ToLower(tool.Description), "text2sql") || strings.Contains(strings.ToLower(tool.Description), "query") {
+			score++
+		}
+		scored = append(scored, scoredTool{tool: tool, score: score, idx: i})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].idx < scored[j].idx
+		}
+		return scored[i].score > scored[j].score
+	})
+	selected := make([]ToolDef, 0, limit)
+	for i := 0; i < limit && i < len(scored); i++ {
+		selected = append(selected, scored[i].tool)
+	}
+	return compactTools(selected)
+}
+
+func compactTools(tools []ToolDef) []ToolDef {
+	out := make([]ToolDef, 0, len(tools))
+	for _, tool := range tools {
+		if len(tool.Description) > 220 {
+			tool.Description = tool.Description[:220] + "..."
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
 // getAvailableTools 从已注册的 Skill 中派生可用工具列表
 // 所有工具均来自 skills 表（内置 + 用户自定义），智能体不能自创工具
 // 如果用户选中了特定 Skill，只返回该 Skill 对应的工具（精确边界）
@@ -798,6 +859,29 @@ type ToolDef struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	Parameters  map[string]interface{} `json:"parameters"`
+}
+
+func (e *AgentEngine) executeSelectedSkillDirect(ctx context.Context, user *UserContext, skillID string, query string, conversationID string, start time.Time) (*ChatResponse, bool) {
+	var skill models.Skill
+	if err := e.db.Where("id = ? AND enabled = ?", skillID, true).First(&skill).Error; err != nil {
+		return nil, false
+	}
+	tool := toolNameFromSkill(skill)
+	if tool == "" {
+		return nil, false
+	}
+	input := map[string]interface{}{"input": query}
+	switch tool {
+	case "text2sql":
+		input = map[string]interface{}{"question": query}
+	case "chat":
+		input = map[string]interface{}{"query": query}
+	}
+	out, err := e.executeSkillTool(ctx, user, skillID, input)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil, false
+	}
+	return &ChatResponse{Message: out, ConversationID: conversationID, SkillUsed: "direct_skill", Data: map[string]interface{}{"path": "direct_skill", "duration_ms": time.Since(start).Milliseconds(), "skill_id": skillID, "skill_name": skill.Name}}, true
 }
 
 func (e *AgentEngine) executeSkillTool(ctx context.Context, user *UserContext, skillID string, input map[string]interface{}) (string, error) {

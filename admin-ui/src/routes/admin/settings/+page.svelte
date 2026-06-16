@@ -28,6 +28,7 @@
         { id: "security", label: "安全", icon: Shield },
         { id: "embedding", label: "向量引擎", icon: Brain },
         { id: "executor", label: "执行器", icon: Cog },
+        { id: "storage", label: "对象存储", icon: Database },
         { id: "smtp", label: "邮件", icon: Mail },
         { id: "update", label: "更新", icon: RefreshCw },
     ];
@@ -60,6 +61,17 @@
         try {
             await api.post("/admin/system/smtp/test");
             message = "测试邮件已发送";
+        } catch (e: any) {
+            error = e.message;
+        }
+    }
+
+    async function testStorage() {
+        message = "";
+        error = "";
+        try {
+            const result = await api.post<any>("/admin/system/storage/test");
+            message = `对象存储测试成功：${result.url}`;
         } catch (e: any) {
             error = e.message;
         }
@@ -560,6 +572,67 @@
                             />
                         </div>
                     </div>
+                </div>
+            </div>
+        {/if}
+
+        <!-- Storage Tab -->
+        {#if activeTab === "storage"}
+            <div class="card space-y-4">
+                <h3 class="font-semibold text-slate-800">对象存储配置</h3>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">存储类型</label>
+                    <select bind:value={config.storage.type} class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                        <option value="local">本地文件</option>
+                        <option value="s3">S3/OSS/MinIO</option>
+                    </select>
+                </div>
+                {#if config.storage.type === "local"}
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">本地目录</label>
+                            <input type="text" bind:value={config.storage.local.path} placeholder="data/output" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">公开访问 URL / 自定义域名</label>
+                            <input type="text" bind:value={config.storage.local.base_url} placeholder="https://downloads.example.com 或 http://host:8886/downloads" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                    </div>
+                {:else}
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">Endpoint</label>
+                            <input type="text" bind:value={config.storage.s3.endpoint} placeholder="oss-cn-hangzhou.aliyuncs.com / minio:9000" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">Region</label>
+                            <input type="text" bind:value={config.storage.s3.region} placeholder="us-east-1" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">Access Key</label>
+                            <input type="text" bind:value={config.storage.s3.access_key} class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">Secret Key</label>
+                            <input type="password" bind:value={config.storage.s3.secret_key} placeholder="留空则不修改" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">Bucket</label>
+                            <input type="text" bind:value={config.storage.s3.bucket} class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-600 mb-1">自定义访问域名 / CDN 域名</label>
+                            <input type="text" bind:value={config.storage.s3.custom_domain} placeholder="https://downloads.example.com（优先用于生成文件URL）" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+                        </div>
+                        <div class="flex items-center gap-4 pt-6">
+                            <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={config.storage.s3.use_ssl} /> HTTPS</label>
+                            <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={config.storage.s3.path_style} /> Path Style</label>
+                        </div>
+                    </div>
+                {/if}
+                <div class="flex items-center gap-3">
+                    <button class="px-4 py-2 rounded-lg bg-slate-800 text-white text-sm hover:bg-slate-700" on:click={testStorage}>测试对象存储</button>
+                    <p class="text-xs text-slate-500">修改对象存储后通常需要重启服务，以重新初始化 storage driver。生成文件链接会使用这里配置的公开 URL。</p>
                 </div>
             </div>
         {/if}

@@ -88,7 +88,11 @@ func renderReactSystemPrompt(tools []ToolDef, user *UserContext, maxIterations i
 	toolData := make([]map[string]interface{}, 0, len(tools))
 	for _, tool := range tools {
 		params, _ := json.Marshal(tool.Parameters)
-		toolData = append(toolData, map[string]interface{}{"name": tool.Name, "description": tool.Description, "params_json": string(params)})
+		paramsJSON := string(params)
+		if len(paramsJSON) > 600 {
+			paramsJSON = paramsJSON[:600] + "..."
+		}
+		toolData = append(toolData, map[string]interface{}{"name": tool.Name, "description": tool.Description, "params_json": paramsJSON})
 	}
 	now := time.Now()
 	data := map[string]interface{}{

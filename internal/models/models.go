@@ -298,7 +298,8 @@ type SkillRuntimeMemory struct {
 	Content      string    `json:"content" gorm:"type:text"`
 	Confidence   float64   `json:"confidence" gorm:"default:0.5"`
 	UseCount     int       `json:"use_count" gorm:"default:1"`
-	Source       string    `json:"source" gorm:"type:varchar(50);default:runtime"` // runtime, confirmed, admin
+	Source       string    `json:"source" gorm:"type:varchar(50);default:runtime"`      // runtime, confirmed, admin, bootstrap
+	Status       string    `json:"status" gorm:"type:varchar(30);default:active;index"` // pending, active, rejected
 	LastUsedAt   time.Time `json:"last_used_at" gorm:"index"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -323,6 +324,9 @@ func (m *SkillRuntimeMemory) BeforeCreate(tx *gorm.DB) error {
 	}
 	if m.Source == "" {
 		m.Source = "runtime"
+	}
+	if m.Status == "" {
+		m.Status = "active"
 	}
 	if m.LastUsedAt.IsZero() {
 		m.LastUsedAt = time.Now()
@@ -373,9 +377,12 @@ func (s *SQLAudit) BeforeCreate(tx *gorm.DB) error {
 type MCPConfig struct {
 	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
 	Name      string    `json:"name" gorm:"type:varchar(100)"`
+	Transport string    `json:"transport" gorm:"type:varchar(20);default:stdio"`
 	Command   string    `json:"command" gorm:"type:varchar(500)"`
 	Args      string    `json:"args" gorm:"type:text"` // JSON array
 	Env       string    `json:"env" gorm:"type:text"`  // JSON object
+	URL       string    `json:"url" gorm:"type:varchar(1000)"`
+	Headers   string    `json:"headers" gorm:"type:text"`
 	Enabled   bool      `json:"enabled" gorm:"default:true"`
 	Status    string    `json:"status" gorm:"type:varchar(20)"`
 	CreatedAt time.Time `json:"created_at"`

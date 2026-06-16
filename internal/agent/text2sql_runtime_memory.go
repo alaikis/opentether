@@ -22,6 +22,13 @@ func (e *AgentEngine) buildText2SQLRuntimeContext(skillID, dataSourceID string) 
 	if e == nil || e.db == nil || dataSourceID == "" {
 		return ""
 	}
+	cacheKey := skillID + "|" + dataSourceID
+	e.runtimeMemMu.Lock()
+	if cached, ok := e.runtimeMemCache[cacheKey]; ok && time.Now().Before(cached.ExpiresAt) {
+		e.runtimeMemMu.Unlock()
+		return cached.Text
+	}
+	e.runtimeMemMu.Unlock()
 	var memories []models.SkillRuntimeMemory
 	query := e.db.Where("data_source_id = ? AND confidence >= ?", dataSourceID, 0.55)
 	if skillID != "" {
@@ -36,7 +43,11 @@ func (e *AgentEngine) buildText2SQLRuntimeContext(skillID, dataSourceID string) 
 	for _, mem := range memories {
 		sb.WriteString(fmt.Sprintf("- [%s/%s conf=%.2f used=%d] %s\n", mem.Type, mem.Key, mem.Confidence, mem.UseCount, mem.Content))
 	}
-	return sb.String()
+	text := sb.String()
+	e.runtimeMemMu.Lock()
+	e.runtimeMemCache[cacheKey] = runtimeMemCacheEntry{Text: text, ExpiresAt: time.Now().Add(5 * time.Minute)}
+	e.runtimeMemMu.Unlock()
+	return text
 }
 
 func (e *AgentEngine) recallSkillRuntimeMemorySemantic(dataSourceID, queryText string, limit int, threshold float64) []skillRuntimeMemoryMatch {

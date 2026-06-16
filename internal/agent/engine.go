@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alaikis/opentether/internal/config"
@@ -26,20 +27,36 @@ import (
 )
 
 type AgentEngine struct {
-	db             *gorm.DB
-	config         *config.Config
-	skills         *SkillManager
-	providers      *ProviderManager
-	memory         *MemoryManager
-	longTermMemory *LongTermMemory
-	experience     *ExperienceManager
-	env            *EnvManager
-	scripts        *ScriptManager
-	store          storage.Driver
-	sqlAuditor     text2sql.AuditRecorder
-	externalDBPool *database.ExternalDBPoolManager
-	mcpProvider    MCPToolProvider
-	fastClassifier *FastPathClassifier
+	db              *gorm.DB
+	config          *config.Config
+	skills          *SkillManager
+	providers       *ProviderManager
+	memory          *MemoryManager
+	longTermMemory  *LongTermMemory
+	experience      *ExperienceManager
+	env             *EnvManager
+	scripts         *ScriptManager
+	store           storage.Driver
+	sqlAuditor      text2sql.AuditRecorder
+	externalDBPool  *database.ExternalDBPoolManager
+	mcpProvider     MCPToolProvider
+	fastClassifier  *FastPathClassifier
+	fastCacheMu     sync.Mutex
+	fastCache       map[string]fastCacheEntry
+	fastInflight    map[string]chan fastCacheEntry
+	runtimeMemMu    sync.Mutex
+	runtimeMemCache map[string]runtimeMemCacheEntry
+}
+
+type fastCacheEntry struct {
+	Resp      *ChatResponse
+	Err       error
+	ExpiresAt time.Time
+}
+
+type runtimeMemCacheEntry struct {
+	Text      string
+	ExpiresAt time.Time
 }
 
 // MCPToolProvider exposes running MCP tools to the Agent without importing the service package.
@@ -136,17 +153,20 @@ func NewAgentEngineWithExternalDBPool(db *gorm.DB, cfg *config.Config, store sto
 		externalDBPool = database.NewExternalDBPoolManager(db, nil)
 	}
 	return &AgentEngine{
-		db:             db,
-		config:         cfg,
-		skills:         NewSkillManager(db),
-		providers:      NewProviderManager(db),
-		memory:         NewMemoryManager(db),
-		experience:     NewExperienceManager(db),
-		env:            NewEnvManager(),
-		scripts:        NewScriptManager(db),
-		store:          store,
-		externalDBPool: externalDBPool,
-		fastClassifier: NewFastPathClassifier(db),
+		db:              db,
+		config:          cfg,
+		skills:          NewSkillManager(db),
+		providers:       NewProviderManager(db),
+		memory:          NewMemoryManager(db),
+		experience:      NewExperienceManager(db),
+		env:             NewEnvManager(),
+		scripts:         NewScriptManager(db),
+		store:           store,
+		externalDBPool:  externalDBPool,
+		fastClassifier:  NewFastPathClassifier(db),
+		fastCache:       make(map[string]fastCacheEntry),
+		fastInflight:    make(map[string]chan fastCacheEntry),
+		runtimeMemCache: make(map[string]runtimeMemCacheEntry),
 	}
 }
 
@@ -812,17 +832,23 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 	// 格式化结果
 	responseMessage := formatQueryResult(result)
 
+	data := map[string]interface{}{
+		"type":           "text2sql",
+		"sql":            result.SQL,
+		"columns":        result.Columns,
+		"rows":           result.Rows,
+		"row_count":      result.RowCount,
+		"execution_time": result.ExecutionTime,
+		"data_source_id": dataSourceID,
+		"generated_at":   time.Now().Format(time.RFC3339),
+		"freshness":      "live_query",
+	}
+	if chart := buildChartPayload(result.Columns, result.Rows, responseMessage); chart != nil {
+		data["chart"] = chart
+	}
 	return &ChatResponse{
-		Message: responseMessage,
-		Data: map[string]interface{}{
-			"type":           "text2sql",
-			"sql":            result.SQL,
-			"columns":        result.Columns,
-			"rows":           result.Rows,
-			"row_count":      result.RowCount,
-			"execution_time": result.ExecutionTime,
-			"data_source_id": dataSourceID,
-		},
+		Message:   responseMessage,
+		Data:      data,
 		SkillUsed: "skill_text2sql",
 	}, nil
 }
@@ -1061,6 +1087,51 @@ func formatTrendResult(headers []string, rows [][]interface{}) string {
 		table.WriteString(fmt.Sprintf("- %s：%s\n", labels[i], strings.Join(parts, "，")))
 	}
 	return table.String()
+}
+
+func buildChartPayload(headers []string, rows [][]interface{}, fallback string) map[string]interface{} {
+	if len(rows) == 0 || len(headers) < 2 || !isTrendQuery(headers) {
+		return nil
+	}
+	labelIdx := 0
+	for i, h := range headers {
+		if strings.EqualFold(h, "month") || strings.EqualFold(h, "月份") {
+			labelIdx = i
+			break
+		}
+	}
+	labels := make([]string, 0, len(rows))
+	for _, row := range rows {
+		labels = append(labels, fmt.Sprint(row[labelIdx]))
+	}
+	series := []map[string]interface{}{}
+	for colIdx, h := range headers {
+		if colIdx == labelIdx {
+			continue
+		}
+		values := []float64{}
+		valid := true
+		for _, row := range rows {
+			v, err := toFloat64(row[colIdx])
+			if err != nil {
+				valid = false
+				break
+			}
+			values = append(values, v)
+		}
+		if valid {
+			name := humanMetricLabel(h)
+			unit := "元"
+			if name == "订单数" {
+				unit = "单"
+			}
+			series = append(series, map[string]interface{}{"name": name, "values": values, "unit": unit})
+		}
+	}
+	if len(series) == 0 {
+		return nil
+	}
+	return map[string]interface{}{"type": "chart", "chart_type": "bar", "labels": labels, "series": series, "fallback_text": fallback}
 }
 
 func humanMetricLabel(header string) string {
@@ -1688,6 +1759,33 @@ func (m *ProviderManager) GetProviderByRole(role string) (*models.Provider, erro
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (m *ProviderManager) CallLLMWithFallback(ctx context.Context, preferred *models.Provider, prompt string) (string, error) {
+	if preferred != nil {
+		if answer, err := m.CallLLM(ctx, preferred, prompt); err == nil {
+			return answer, nil
+		}
+	}
+	var providers []models.Provider
+	if err := m.db.Where("enabled = ?", true).Order("priority ASC").Find(&providers).Error; err != nil {
+		return "", err
+	}
+	var lastErr error
+	for _, provider := range providers {
+		if preferred != nil && provider.ID == preferred.ID {
+			continue
+		}
+		answer, err := m.CallLLM(ctx, &provider, prompt)
+		if err == nil {
+			return answer, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", gorm.ErrRecordNotFound
+}
+
 func (m *ProviderManager) CallLLM(ctx context.Context, provider *models.Provider, prompt string) (string, error) {
 	// Use the new LLM client for actual API calls
 	client, err := llm.NewClient(provider)
@@ -1713,13 +1811,21 @@ func (m *ProviderManager) CallLLM(ctx context.Context, provider *models.Provider
 
 // SkillManager Skills 管理
 type SkillManager struct {
-	db       *gorm.DB
-	embedder embedding.Embedder
-	store    vectorstore.Store
+	db         *gorm.DB
+	embedder   embedding.Embedder
+	store      vectorstore.Store
+	cacheMu    sync.Mutex
+	matchCache map[string]skillMatchCacheEntry
+}
+
+type skillMatchCacheEntry struct {
+	Skill     *models.Skill
+	Score     float64
+	ExpiresAt time.Time
 }
 
 func NewSkillManager(db *gorm.DB) *SkillManager {
-	sm := &SkillManager{db: db}
+	sm := &SkillManager{db: db, matchCache: make(map[string]skillMatchCacheEntry)}
 	// 延迟初始化，由外部调用 InitVector
 	return sm
 }
@@ -1790,6 +1896,9 @@ func (m *SkillManager) SyncVector() error {
 		return fmt.Errorf("获取 Skill 列表失败: %w", err)
 	}
 
+	m.cacheMu.Lock()
+	m.matchCache = make(map[string]skillMatchCacheEntry)
+	m.cacheMu.Unlock()
 	if m.embedder == nil || m.store == nil {
 		return fmt.Errorf("向量层未初始化，请先调用 InitVector")
 	}
@@ -1830,6 +1939,13 @@ func (m *SkillManager) SyncVector() error {
 
 // MatchByVector 向量匹配：使用 Embedder + VectorStore 搜索最佳匹配
 func (m *SkillManager) MatchByVector(message string, threshold float64) (*models.Skill, float64, error) {
+	key := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(message))), " ")
+	m.cacheMu.Lock()
+	if entry, ok := m.matchCache[key]; ok && time.Now().Before(entry.ExpiresAt) {
+		m.cacheMu.Unlock()
+		return entry.Skill, entry.Score, nil
+	}
+	m.cacheMu.Unlock()
 	if m.embedder == nil || m.store == nil || m.store.Count() == 0 {
 		return nil, 0, nil
 	}
@@ -1852,6 +1968,9 @@ func (m *SkillManager) MatchByVector(message string, threshold float64) (*models
 		return nil, 0, nil
 	}
 
+	m.cacheMu.Lock()
+	m.matchCache[key] = skillMatchCacheEntry{Skill: &skill, Score: matches[0].Score, ExpiresAt: time.Now().Add(5 * time.Minute)}
+	m.cacheMu.Unlock()
 	return &skill, matches[0].Score, nil
 }
 

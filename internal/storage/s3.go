@@ -23,25 +23,27 @@ import (
 //   - Huawei OBS            (endpoint="obs.<region>.myhuaweicloud.com", pathStyle=false)
 //   - Any S3-compatible     (set endpoint + region + pathStyle accordingly)
 type S3Storage struct {
-	endpoint  string // host[:port]
-	region    string
-	accessKey string
-	secretKey string
-	bucket    string
-	useSSL    bool
-	pathStyle bool // true for MinIO-style, false for virtual-hosted
-	client    *http.Client
+	endpoint     string // host[:port]
+	region       string
+	accessKey    string
+	secretKey    string
+	bucket       string
+	customDomain string
+	useSSL       bool
+	pathStyle    bool // true for MinIO-style, false for virtual-hosted
+	client       *http.Client
 }
 
 // S3Config holds S3-compatible storage configuration.
 type S3Config struct {
-	Endpoint  string
-	Region    string
-	AccessKey string
-	SecretKey string
-	Bucket    string
-	UseSSL    bool
-	PathStyle bool
+	Endpoint     string
+	Region       string
+	AccessKey    string
+	SecretKey    string
+	Bucket       string
+	CustomDomain string
+	UseSSL       bool
+	PathStyle    bool
 }
 
 func NewS3Storage(cfg S3Config) *S3Storage {
@@ -49,14 +51,15 @@ func NewS3Storage(cfg S3Config) *S3Storage {
 		cfg.Region = "us-east-1"
 	}
 	return &S3Storage{
-		endpoint:  cfg.Endpoint,
-		region:    cfg.Region,
-		accessKey: cfg.AccessKey,
-		secretKey: cfg.SecretKey,
-		bucket:    cfg.Bucket,
-		useSSL:    cfg.UseSSL,
-		pathStyle: cfg.PathStyle,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		endpoint:     cfg.Endpoint,
+		region:       cfg.Region,
+		accessKey:    cfg.AccessKey,
+		secretKey:    cfg.SecretKey,
+		bucket:       cfg.Bucket,
+		customDomain: strings.TrimRight(cfg.CustomDomain, "/"),
+		useSSL:       cfg.UseSSL,
+		pathStyle:    cfg.PathStyle,
+		client:       &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -157,6 +160,9 @@ func (s *S3Storage) Exists(ctx context.Context, path string) bool {
 }
 
 func (s *S3Storage) PublicURL(path string) string {
+	if s.customDomain != "" {
+		return s.customDomain + "/" + strings.TrimLeft(path, "/")
+	}
 	return s.objectURL(path)
 }
 
@@ -239,13 +245,14 @@ func New(cfg Config) (Driver, error) {
 		return NewLocalStorage(cfg.Local.Path, cfg.Local.BaseURL)
 	case "s3":
 		s3 := NewS3Storage(S3Config{
-			Endpoint:  cfg.S3.Endpoint,
-			Region:    cfg.S3.Region,
-			AccessKey: cfg.S3.AccessKey,
-			SecretKey: cfg.S3.SecretKey,
-			Bucket:    cfg.S3.Bucket,
-			UseSSL:    cfg.S3.UseSSL,
-			PathStyle: cfg.S3.PathStyle,
+			Endpoint:     cfg.S3.Endpoint,
+			Region:       cfg.S3.Region,
+			AccessKey:    cfg.S3.AccessKey,
+			SecretKey:    cfg.S3.SecretKey,
+			Bucket:       cfg.S3.Bucket,
+			CustomDomain: cfg.S3.CustomDomain,
+			UseSSL:       cfg.S3.UseSSL,
+			PathStyle:    cfg.S3.PathStyle,
 		})
 		return s3, nil
 	default:
@@ -266,11 +273,12 @@ type LocalConfig struct {
 }
 
 type S3ConfigRaw struct {
-	Endpoint  string `yaml:"endpoint"`
-	Region    string `yaml:"region"`
-	AccessKey string `yaml:"access_key"`
-	SecretKey string `yaml:"secret_key"`
-	Bucket    string `yaml:"bucket"`
-	UseSSL    bool   `yaml:"use_ssl"`
-	PathStyle bool   `yaml:"path_style"`
+	Endpoint     string `yaml:"endpoint"`
+	Region       string `yaml:"region"`
+	AccessKey    string `yaml:"access_key"`
+	SecretKey    string `yaml:"secret_key"`
+	Bucket       string `yaml:"bucket"`
+	CustomDomain string `yaml:"custom_domain"`
+	UseSSL       bool   `yaml:"use_ssl"`
+	PathStyle    bool   `yaml:"path_style"`
 }

@@ -119,6 +119,12 @@
             group: "自动化",
         },
         {
+            href: "/admin/cloud",
+            label: "云端管理",
+            icon: Server,
+            group: "自动化",
+        },
+        {
             href: "/admin/runtime-jobs",
             label: "运行任务",
             icon: Activity,

@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/smtp"
 	"strings"
+	"time"
 
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/im"
@@ -12,6 +14,7 @@ import (
 	"github.com/alaikis/opentether/internal/middleware"
 	"github.com/alaikis/opentether/internal/models"
 	"github.com/alaikis/opentether/internal/service"
+	"github.com/alaikis/opentether/internal/storage"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
@@ -488,6 +491,7 @@ func (h *Handler) CreateSkill(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	_ = h.services.MCP.AutoStartFromSkill(result.ID)
 	return c.JSON(result)
 }
 
@@ -505,6 +509,7 @@ func (h *Handler) UpdateSkill(c *fiber.Ctx) error {
 		}
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	_ = h.services.MCP.AutoStartFromSkill(id)
 	return c.JSON(result)
 }
 
@@ -1255,11 +1260,14 @@ func (h *Handler) ListMCPConfigs(c *fiber.Ctx) error {
 // CreateMCPConfig 创建 MCP 配置
 func (h *Handler) CreateMCPConfig(c *fiber.Ctx) error {
 	type MCPConfigInput struct {
-		Name    string `json:"name"`
-		Command string `json:"command"`
-		Args    string `json:"args"`
-		Env     string `json:"env"`
-		Enabled bool   `json:"enabled"`
+		Name      string `json:"name"`
+		Transport string `json:"transport"`
+		Command   string `json:"command"`
+		Args      string `json:"args"`
+		Env       string `json:"env"`
+		URL       string `json:"url"`
+		Headers   string `json:"headers"`
+		Enabled   bool   `json:"enabled"`
 	}
 
 	var input MCPConfigInput
@@ -1268,11 +1276,14 @@ func (h *Handler) CreateMCPConfig(c *fiber.Ctx) error {
 	}
 
 	config := &service.MCPConfig{
-		Name:    input.Name,
-		Command: input.Command,
-		Args:    input.Args,
-		Env:     input.Env,
-		Enabled: input.Enabled,
+		Name:      input.Name,
+		Transport: input.Transport,
+		Command:   input.Command,
+		Args:      input.Args,
+		Env:       input.Env,
+		URL:       input.URL,
+		Headers:   input.Headers,
+		Enabled:   input.Enabled,
 	}
 
 	if err := h.services.MCP.SaveToDB(config); err != nil {
@@ -1286,11 +1297,14 @@ func (h *Handler) CreateMCPConfig(c *fiber.Ctx) error {
 func (h *Handler) UpdateMCPConfig(c *fiber.Ctx) error {
 	id := c.Params("id")
 	type MCPConfigInput struct {
-		Name    string `json:"name"`
-		Command string `json:"command"`
-		Args    string `json:"args"`
-		Env     string `json:"env"`
-		Enabled bool   `json:"enabled"`
+		Name      string `json:"name"`
+		Transport string `json:"transport"`
+		Command   string `json:"command"`
+		Args      string `json:"args"`
+		Env       string `json:"env"`
+		URL       string `json:"url"`
+		Headers   string `json:"headers"`
+		Enabled   bool   `json:"enabled"`
 	}
 
 	var input MCPConfigInput
@@ -1299,11 +1313,14 @@ func (h *Handler) UpdateMCPConfig(c *fiber.Ctx) error {
 	}
 
 	config, err := h.services.MCP.UpdateConfig(id, service.MCPConfig{
-		Name:    input.Name,
-		Command: input.Command,
-		Args:    input.Args,
-		Env:     input.Env,
-		Enabled: input.Enabled,
+		Name:      input.Name,
+		Transport: input.Transport,
+		Command:   input.Command,
+		Args:      input.Args,
+		Env:       input.Env,
+		URL:       input.URL,
+		Headers:   input.Headers,
+		Enabled:   input.Enabled,
 	})
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -1891,13 +1908,14 @@ func (h *Handler) GetSystemConfig(c *fiber.Ctx) error {
 				"base_url": h.config.Storage.Local.BaseURL,
 			},
 			"s3": fiber.Map{
-				"endpoint":   h.config.Storage.S3.Endpoint,
-				"region":     h.config.Storage.S3.Region,
-				"access_key": h.config.Storage.S3.AccessKey,
-				"secret_key": "",
-				"bucket":     h.config.Storage.S3.Bucket,
-				"use_ssl":    h.config.Storage.S3.UseSSL,
-				"path_style": h.config.Storage.S3.PathStyle,
+				"endpoint":      h.config.Storage.S3.Endpoint,
+				"region":        h.config.Storage.S3.Region,
+				"access_key":    h.config.Storage.S3.AccessKey,
+				"secret_key":    "",
+				"bucket":        h.config.Storage.S3.Bucket,
+				"custom_domain": h.config.Storage.S3.CustomDomain,
+				"use_ssl":       h.config.Storage.S3.UseSSL,
+				"path_style":    h.config.Storage.S3.PathStyle,
 			},
 		},
 	})
@@ -1943,6 +1961,25 @@ func (h *Handler) ExternalListUsers(c *fiber.Ctx) error {
 }
 
 // UpdateSystemConfig 更新系统配置
+func (h *Handler) TestStorageConfig(c *fiber.Ctx) error {
+	drv, err := storage.New(storage.Config{Type: h.config.Storage.Type, Local: storage.LocalConfig{Path: h.config.Storage.Local.Path, BaseURL: h.config.Storage.Local.BaseURL}, S3: storage.S3ConfigRaw{Endpoint: h.config.Storage.S3.Endpoint, Region: h.config.Storage.S3.Region, AccessKey: h.config.Storage.S3.AccessKey, SecretKey: h.config.Storage.S3.SecretKey, Bucket: h.config.Storage.S3.Bucket, CustomDomain: h.config.Storage.S3.CustomDomain, UseSSL: h.config.Storage.S3.UseSSL, PathStyle: h.config.Storage.S3.PathStyle}})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"ok": false, "error": err.Error(), "hint": "对象存储配置初始化失败"})
+	}
+	ctx, cancel := context.WithTimeout(c.UserContext(), 10*time.Second)
+	defer cancel()
+	path := "health/storage-test-" + time.Now().Format("20060102150405") + ".txt"
+	url, err := drv.Save(ctx, path, []byte("opentether storage test"), "text/plain; charset=utf-8")
+	if err != nil {
+		hint := "请检查 endpoint、bucket、access_key、secret_key、region、path_style、权限策略和时间同步"
+		if strings.Contains(err.Error(), "403") {
+			hint = "S3/OSS 返回 403：通常是 AccessKey/SecretKey 错误、Bucket 权限不足、签名 Region 不匹配、PathStyle 配置错误或 Bucket ACL/Policy 不允许写入"
+		}
+		return c.Status(500).JSON(fiber.Map{"ok": false, "error": err.Error(), "hint": hint})
+	}
+	return c.JSON(fiber.Map{"ok": true, "url": url, "path": path})
+}
+
 func (h *Handler) UpdateSystemConfig(c *fiber.Ctx) error {
 	type SystemConfigInput struct {
 		Server *struct {
@@ -2018,6 +2055,23 @@ func (h *Handler) UpdateSystemConfig(c *fiber.Ctx) error {
 			FromName   string `json:"from_name"`
 			ToEmail    string `json:"to_email"`
 		} `json:"smtp"`
+		Storage *struct {
+			Type  string `json:"type"`
+			Local *struct {
+				Path    string `json:"path"`
+				BaseURL string `json:"base_url"`
+			} `json:"local"`
+			S3 *struct {
+				Endpoint     string `json:"endpoint"`
+				Region       string `json:"region"`
+				AccessKey    string `json:"access_key"`
+				SecretKey    string `json:"secret_key"`
+				Bucket       string `json:"bucket"`
+				CustomDomain string `json:"custom_domain"`
+				UseSSL       bool   `json:"use_ssl"`
+				PathStyle    bool   `json:"path_style"`
+			} `json:"s3"`
+		} `json:"storage"`
 	}
 
 	var input SystemConfigInput
@@ -2237,6 +2291,50 @@ func (h *Handler) UpdateSystemConfig(c *fiber.Ctx) error {
 		}
 		if s.ToEmail != "" {
 			h.config.SMTP.ToEmail = s.ToEmail
+			changed = true
+		}
+	}
+
+	if input.Storage != nil {
+		s := input.Storage
+		if s.Type != "" {
+			h.config.Storage.Type = s.Type
+			changed = true
+		}
+		if s.Local != nil {
+			if s.Local.Path != "" {
+				h.config.Storage.Local.Path = s.Local.Path
+				changed = true
+			}
+			if s.Local.BaseURL != "" {
+				h.config.Storage.Local.BaseURL = s.Local.BaseURL
+				changed = true
+			}
+		}
+		if s.S3 != nil {
+			if s.S3.Endpoint != "" {
+				h.config.Storage.S3.Endpoint = s.S3.Endpoint
+				changed = true
+			}
+			if s.S3.Region != "" {
+				h.config.Storage.S3.Region = s.S3.Region
+				changed = true
+			}
+			if s.S3.AccessKey != "" {
+				h.config.Storage.S3.AccessKey = s.S3.AccessKey
+				changed = true
+			}
+			if s.S3.SecretKey != "" {
+				h.config.Storage.S3.SecretKey = s.S3.SecretKey
+				changed = true
+			}
+			if s.S3.Bucket != "" {
+				h.config.Storage.S3.Bucket = s.S3.Bucket
+				changed = true
+			}
+			h.config.Storage.S3.CustomDomain = s.S3.CustomDomain
+			h.config.Storage.S3.UseSSL = s.S3.UseSSL
+			h.config.Storage.S3.PathStyle = s.S3.PathStyle
 			changed = true
 		}
 	}

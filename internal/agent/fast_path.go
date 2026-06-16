@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,16 +27,126 @@ type fastPathResult struct {
 	Hit      bool
 }
 
+func (e *AgentEngine) fastPathCacheKey(user *UserContext, message string) string {
+	userID := ""
+	dataSourceID := ""
+	if user != nil {
+		userID = user.UserID
+		if user.Context != nil {
+			dataSourceID, _ = user.Context["data_source_id"].(string)
+		}
+	}
+	return userID + "|" + dataSourceID + "|" + strings.TrimSpace(message)
+}
+
+func (e *AgentEngine) getFastPathCache(key, conversationID string) (*ChatResponse, bool) {
+	if e == nil || key == "" {
+		return nil, false
+	}
+	e.fastCacheMu.Lock()
+	entry, ok := e.fastCache[key]
+	if ok && time.Now().Before(entry.ExpiresAt) && entry.Resp != nil {
+		resp := *entry.Resp
+		resp.ConversationID = conversationID
+		e.fastCacheMu.Unlock()
+		return &resp, true
+	}
+	if ok {
+		delete(e.fastCache, key)
+	}
+	e.fastCacheMu.Unlock()
+	return nil, false
+}
+
+func (e *AgentEngine) setFastPathCache(key string, resp *ChatResponse, ttl time.Duration) {
+	if e == nil || key == "" || resp == nil || ttl <= 0 {
+		return
+	}
+	copyResp := *resp
+	entry := fastCacheEntry{Resp: &copyResp, ExpiresAt: time.Now().Add(ttl)}
+	e.fastCacheMu.Lock()
+	e.fastCache[key] = entry
+	e.fastCacheMu.Unlock()
+	e.finishFastPathInflight(key, entry)
+}
+
+func (e *AgentEngine) beginFastPathInflight(key string) (chan fastCacheEntry, bool) {
+	if e == nil || key == "" {
+		return nil, true
+	}
+	e.fastCacheMu.Lock()
+	if ch, ok := e.fastInflight[key]; ok {
+		e.fastCacheMu.Unlock()
+		return ch, false
+	}
+	ch := make(chan fastCacheEntry, 1)
+	e.fastInflight[key] = ch
+	e.fastCacheMu.Unlock()
+	return ch, true
+}
+
+func (e *AgentEngine) finishFastPathInflight(key string, entry fastCacheEntry) {
+	if e == nil || key == "" {
+		return
+	}
+	e.fastCacheMu.Lock()
+	ch := e.fastInflight[key]
+	delete(e.fastInflight, key)
+	e.fastCacheMu.Unlock()
+	if ch != nil {
+		ch <- entry
+		close(ch)
+	}
+}
+
 func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, message, conversationID string) (*ChatResponse, bool, error) {
+	start := time.Now()
+	annotate := func(resp *ChatResponse, source string) *ChatResponse {
+		if resp == nil {
+			return resp
+		}
+		if resp.Data == nil {
+			resp.Data = map[string]interface{}{}
+		}
+		resp.Data["fast_path"] = true
+		resp.Data["fast_path_source"] = source
+		resp.Data["duration_ms"] = time.Since(start).Milliseconds()
+		return resp
+	}
 	if shouldSkipFastPath(message) {
 		return nil, false, nil
 	}
+	cacheKey := e.fastPathCacheKey(user, message)
+	if resp, ok := e.getFastPathCache(cacheKey, conversationID); ok {
+		return annotate(resp, "cache"), true, nil
+	}
+	if ch, owner := e.beginFastPathInflight(cacheKey); !owner {
+		select {
+		case entry := <-ch:
+			if entry.Resp != nil {
+				resp := *entry.Resp
+				resp.ConversationID = conversationID
+				return annotate(&resp, "singleflight"), true, entry.Err
+			}
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+		return nil, false, nil
+	} else {
+		defer func() {
+			if _, ok := e.getFastPathCache(cacheKey, conversationID); !ok {
+				e.finishFastPathInflight(cacheKey, fastCacheEntry{})
+			}
+		}()
+	}
 	if resp, ok := tryLocalFastAnswer(message, conversationID); ok {
-		return resp, true, nil
+		return annotate(resp, "local"), true, nil
 	}
 	// 扩展时间范围：如果消息含时间表达，直接走 text2sql
 	if tr, ok := parseExtendedTimeRange(message); ok && tr.IsRange {
 		if resp, ok := e.tryText2SQLRangeFastPath(ctx, user, message, tr, conversationID); ok {
+			resp = annotate(resp, "range")
+			e.setFastPathCache(cacheKey, resp, 60*time.Second)
 			return resp, true, nil
 		}
 	}
@@ -46,16 +157,20 @@ func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, messag
 	}
 	if route.Route == "fast_text2sql" || route.Intent == "text2sql" {
 		if resp, ok := e.tryText2SQLApprovedTemplateFastPath(ctx, user, message, conversationID); ok {
+			resp = annotate(resp, "approved_template")
+			e.setFastPathCache(cacheKey, resp, 60*time.Second)
 			return resp, true, nil
 		}
 		if resp, ok := e.tryText2SQLTemplateFastPath(ctx, user, message, conversationID); ok {
+			resp = annotate(resp, "text2sql")
+			e.setFastPathCache(cacheKey, resp, 60*time.Second)
 			return resp, true, nil
 		}
 	}
 	if route.Route == "fast_chat" || (route.Route == "" && isSimpleChat(message)) {
 		resp, err := e.executeFastChat(ctx, user, message, conversationID)
 		if err == nil && resp != nil {
-			return resp, true, nil
+			return annotate(resp, "chat"), true, nil
 		}
 	}
 	return nil, false, nil
@@ -92,7 +207,7 @@ func (e *AgentEngine) routeFastPathWithSmallModel(ctx context.Context, user *Use
 		}
 	}
 	prompt := templating.SafeRender(defaultFastRouterJinja, map[string]interface{}{"message": message}, fmt.Sprintf("用户问题：%s", message))
-	answer, err := e.providers.CallLLM(ctx, provider, prompt)
+	answer, err := e.providers.CallLLMWithFallback(ctx, provider, prompt)
 	if err != nil {
 		return fastPathRoute{}
 	}
@@ -128,7 +243,7 @@ func (e *AgentEngine) executeFastChat(ctx context.Context, user *UserContext, me
 		return nil, err
 	}
 	prompt := fmt.Sprintf("请用中文简洁回答，不要使用工具。用户问题：%s", message)
-	answer, err := e.providers.CallLLM(ctx, provider, prompt)
+	answer, err := e.providers.CallLLMWithFallback(ctx, provider, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -204,8 +319,12 @@ func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool)
 		"current_year":  fmt.Sprintf("%d", now.Year()),
 		"current_month": fmt.Sprintf("%02d", int(now.Month())),
 	}
+	if employee := extractTemplateEmployeeName(message); employee != "" {
+		vars["employee_name"] = employee
+	}
 	out := tpl
 	for k, v := range vars {
+		v = strings.ReplaceAll(v, "'", "''")
 		out = strings.ReplaceAll(out, "{{"+k+"}}", "'"+v+"'")
 		out = strings.ReplaceAll(out, "{{ "+k+" }}", "'"+v+"'")
 	}
@@ -213,6 +332,14 @@ func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool)
 		return "", false
 	}
 	return out, true
+}
+
+func extractTemplateEmployeeName(message string) string {
+	m := regexp.MustCompile(`^\s*([\p{Han}]{2,4})`).FindStringSubmatch(message)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
 }
 
 func (e *AgentEngine) executeRenderedSQLTemplate(ctx context.Context, user *UserContext, message, sqlText, dataSourceID, conversationID string) (*ChatResponse, bool) {

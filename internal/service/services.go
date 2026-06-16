@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -864,6 +865,7 @@ func (s *SkillService) UpdateContextMD(id, content string, publish bool) (map[st
 	if s.store == nil {
 		return nil, fmt.Errorf("storage not initialized")
 	}
+	content = stripEnvironmentDetails(content)
 	var cfg map[string]interface{}
 	_ = json.Unmarshal([]byte(skill.Config), &cfg)
 	if cfg == nil {
@@ -939,6 +941,11 @@ const defaultText2SQLContextJinja = `# {{ config.data_source_name|default:"Text2
 {{ config.business_rules }}
 `
 
+func stripEnvironmentDetails(text string) string {
+	re := regexp.MustCompile(`(?s)<environment_details>.*?</environment_details>`)
+	return strings.TrimSpace(re.ReplaceAllString(text, ""))
+}
+
 func (s *SkillService) persistSkillContextMD(skillID, config string) (string, bool) {
 	if s == nil || s.store == nil || config == "" || skillID == "" {
 		return config, false
@@ -957,6 +964,7 @@ func (s *SkillService) persistSkillContextMD(skillID, config string) (string, bo
 	if strings.TrimSpace(tpl) != "" {
 		md = templating.SafeRender(tpl, map[string]interface{}{"skill_id": skillID, "config": cfg}, md)
 	}
+	md = stripEnvironmentDetails(md)
 	if strings.TrimSpace(md) == "" {
 		return config, false
 	}
@@ -1108,7 +1116,7 @@ func (s *SkillService) ListRuntimeMemories(status string, limit int) ([]models.S
 	}
 	query := s.db.Model(&models.SkillRuntimeMemory{})
 	if status == "pending" {
-		query = query.Where("source = ? AND confidence < ?", "runtime", 0.75)
+		query = query.Where("status = ? OR (source = ? AND confidence < ?)", "pending", "runtime", 0.75)
 	} else if status == "approved" {
 		query = query.Where("source IN ? OR confidence >= ?", []string{"admin", "confirmed"}, 0.75)
 	} else if status == "rejected" {
@@ -1127,12 +1135,14 @@ func (s *SkillService) ReviewRuntimeMemory(id, action, content string) (*models.
 	switch action {
 	case "approve":
 		mem.Source = "admin"
+		mem.Status = "active"
 		mem.Confidence = 1.0
 		if strings.TrimSpace(content) != "" {
 			mem.Content = content
 		}
 	case "reject":
 		mem.Source = "rejected"
+		mem.Status = "rejected"
 		mem.Confidence = 0
 	case "edit":
 		if strings.TrimSpace(content) != "" {
@@ -1926,6 +1936,7 @@ func (s *AgentService) recentConversationMessages(conversationID string, limit i
 }
 
 func (s *AgentService) Chat(userID, message, conversationID, skillID string) (map[string]interface{}, error) {
+	message = stripEnvironmentDetails(message)
 	// 创建或获取会话
 	conv, err := s.getOrCreateConversation(userID, conversationID)
 	if err != nil {
@@ -2022,6 +2033,7 @@ func (s *AgentService) Chat(userID, message, conversationID, skillID string) (ma
 // ChatStream sends a streaming chat response (via Agent Engine)
 // Returns a channel that yields response chunks
 func (s *AgentService) ChatStream(userID, message, conversationID, skillID string) (<-chan string, error) {
+	message = stripEnvironmentDetails(message)
 	// 创建或获取会话
 	conv, err := s.getOrCreateConversation(userID, conversationID)
 	if err != nil {

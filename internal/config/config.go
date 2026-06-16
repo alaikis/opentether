@@ -130,13 +130,14 @@ type LocalStorageConfig struct {
 }
 
 type S3StorageConfig struct {
-	Endpoint  string `yaml:"endpoint"`
-	Region    string `yaml:"region"`
-	AccessKey string `yaml:"access_key"`
-	SecretKey string `yaml:"secret_key"`
-	Bucket    string `yaml:"bucket"`
-	UseSSL    bool   `yaml:"use_ssl"`
-	PathStyle bool   `yaml:"path_style"`
+	Endpoint     string `yaml:"endpoint"`
+	Region       string `yaml:"region"`
+	AccessKey    string `yaml:"access_key"`
+	SecretKey    string `yaml:"secret_key"`
+	Bucket       string `yaml:"bucket"`
+	CustomDomain string `yaml:"custom_domain"`
+	UseSSL       bool   `yaml:"use_ssl"`
+	PathStyle    bool   `yaml:"path_style"`
 }
 
 // SMTPConfig SMTP 邮件配置

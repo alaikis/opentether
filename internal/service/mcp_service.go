@@ -2,11 +2,15 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,10 +29,13 @@ type MCPService struct {
 type MCPServer struct {
 	ID        string                       `json:"id"`
 	Name      string                       `json:"name"`
+	Transport string                       `json:"transport"`
 	Command   string                       `json:"command"` // 执行命令，如 "npx", "python"
 	Args      []string                     `json:"args"`    // 参数，如 ["-y", "@modelcontextprotocol/server-filesystem", "./data"]
 	Env       map[string]string            `json:"env"`     // 环境变量
-	Status    string                       `json:"status"`  // running, stopped, error
+	URL       string                       `json:"url"`
+	Headers   map[string]string            `json:"headers"`
+	Status    string                       `json:"status"` // running, stopped, error
 	Process   *exec.Cmd                    `json:"-"`
 	Stdin     *os.File                     `json:"-"`
 	Stdout    *os.File                     `json:"-"`
@@ -150,12 +157,15 @@ func (s *MCPService) UpdateConfig(id string, config MCPConfig) (*MCPConfig, erro
 	}
 
 	updates := map[string]interface{}{
-		"name":    config.Name,
-		"command": config.Command,
-		"args":    config.Args,
-		"env":     config.Env,
-		"enabled": config.Enabled,
-		"status":  "stopped",
+		"name":      config.Name,
+		"transport": config.Transport,
+		"command":   config.Command,
+		"args":      config.Args,
+		"env":       config.Env,
+		"url":       config.URL,
+		"headers":   config.Headers,
+		"enabled":   config.Enabled,
+		"status":    "stopped",
 	}
 	if err := s.db.Model(&existing).Updates(updates).Error; err != nil {
 		return nil, err
@@ -188,6 +198,14 @@ func (s *MCPService) StartServer(configID string) error {
 		return nil // 已经启动
 	}
 	s.mu.Unlock()
+
+	transport := strings.TrimSpace(config.Transport)
+	if transport == "" {
+		transport = "stdio"
+	}
+	if transport == "http" || transport == "sse" {
+		return s.startRemoteServer(config, transport)
+	}
 
 	// 解析参数
 	var args []string
@@ -248,6 +266,36 @@ func (s *MCPService) StartServer(configID string) error {
 	return nil
 }
 
+func (s *MCPService) startRemoteServer(config MCPConfig, transport string) error {
+	if strings.TrimSpace(config.URL) == "" {
+		return fmt.Errorf("remote MCP URL 不能为空")
+	}
+	headers := map[string]string{}
+	if strings.TrimSpace(config.Headers) != "" {
+		_ = json.Unmarshal([]byte(config.Headers), &headers)
+	}
+	server := &MCPServer{
+		ID:        config.ID,
+		Name:      config.Name,
+		Transport: transport,
+		URL:       config.URL,
+		Headers:   headers,
+		Status:    "running",
+		pending:   make(map[string]chan *MCPResponse),
+		StartedAt: time.Now(),
+	}
+	if err := s.initializeRemoteServer(server); err != nil {
+		server.Status = "error"
+		server.LastError = err.Error()
+		return err
+	}
+	s.mu.Lock()
+	s.servers[config.ID] = server
+	s.mu.Unlock()
+	s.db.Model(&config).Update("status", "running")
+	return nil
+}
+
 // createPipes 创建进程管道
 func createPipes(cmd *exec.Cmd) (*os.File, *os.File, *os.File, error) {
 	stdinR, stdinW, err := os.Pipe()
@@ -270,6 +318,20 @@ func createPipes(cmd *exec.Cmd) (*os.File, *os.File, *os.File, error) {
 	cmd.Stderr = stderrW
 
 	return stdinW, stdoutR, stderrR, nil
+}
+
+func (s *MCPService) initializeRemoteServer(server *MCPServer) error {
+	initReq := MCPRequest{JSONRPC: "2.0", Method: "initialize", Params: json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"opentether","version":"1.0.0"}}`), ID: 1}
+	resp, err := s.sendRemoteRequest(server, initReq, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("MCP 初始化错误: %s", resp.Error.Message)
+	}
+	server.Tools = nil
+	s.listTools(server)
+	return nil
 }
 
 // initializeServer 初始化 MCP 服务器 (获取能力列表)
@@ -358,6 +420,9 @@ func (s *MCPService) readLoop(server *MCPServer) {
 
 // sendRequest 发送请求并等待响应。响应由单 reader loop 分发，支持并发调用。
 func (s *MCPService) sendRequest(server *MCPServer, req MCPRequest, timeout time.Duration) (*MCPResponse, error) {
+	if server.Transport == "http" || server.Transport == "sse" {
+		return s.sendRemoteRequest(server, req, timeout)
+	}
 	if req.ID == nil {
 		req.ID = time.Now().UnixNano()
 	}
@@ -398,6 +463,48 @@ func (s *MCPService) sendRequest(server *MCPServer, req MCPRequest, timeout time
 		server.pendingMu.Unlock()
 		return nil, fmt.Errorf("请求超时")
 	}
+}
+
+func (s *MCPService) sendRemoteRequest(server *MCPServer, req MCPRequest, timeout time.Duration) (*MCPResponse, error) {
+	if req.ID == nil {
+		req.ID = time.Now().UnixNano()
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	for k, v := range server.Headers {
+		httpReq.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("remote MCP HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	payload := bytes.TrimSpace(respBody)
+	if bytes.HasPrefix(payload, []byte("data:")) {
+		payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
+	}
+	var out MCPResponse
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // listTools 获取工具列表
@@ -618,27 +725,53 @@ func (s *MCPService) AutoStartFromSkill(skillID string) error {
 		return fmt.Errorf("MCP 配置格式错误")
 	}
 
+	transport, _ := mcpConf["transport"].(string)
+	if transport == "" {
+		transport = "stdio"
+	}
 	command, _ := mcpConf["command"].(string)
+	url, _ := mcpConf["url"].(string)
 	args, _ := mcpConf["args"].([]interface{})
+	headers, _ := mcpConf["headers"].(map[string]interface{})
+	env, _ := mcpConf["env"].(map[string]interface{})
 
 	argsStr := "[]"
 	if len(args) > 0 {
 		argsBytes, _ := json.Marshal(args)
 		argsStr = string(argsBytes)
 	}
+	headersStr := "{}"
+	if len(headers) > 0 {
+		b, _ := json.Marshal(headers)
+		headersStr = string(b)
+	}
+	envStr := "{}"
+	if len(env) > 0 {
+		b, _ := json.Marshal(env)
+		envStr = string(b)
+	}
 
 	// 创建 MCP 配置记录
 	mcpConfigRecord := &MCPConfig{
-		ID:      skill.ID,
-		Name:    skill.Name + " MCP",
-		Command: command,
-		Args:    argsStr,
-		Env:     "{}",
-		Enabled: true,
+		ID:        skill.ID,
+		Name:      skill.Name + " MCP",
+		Transport: transport,
+		Command:   command,
+		Args:      argsStr,
+		Env:       envStr,
+		URL:       url,
+		Headers:   headersStr,
+		Enabled:   true,
 	}
 
 	// 保存到数据库
-	if err := s.db.Where("id = ?", skill.ID).FirstOrCreate(mcpConfigRecord, MCPConfig{ID: skill.ID}).Error; err != nil {
+	var existing MCPConfig
+	if err := s.db.Where("id = ?", skill.ID).First(&existing).Error; err == nil {
+		mcpConfigRecord.Status = "stopped"
+		if err := s.db.Model(&existing).Updates(mcpConfigRecord).Error; err != nil {
+			return err
+		}
+	} else if err := s.db.Create(mcpConfigRecord).Error; err != nil {
 		return err
 	}
 

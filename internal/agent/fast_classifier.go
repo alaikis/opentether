@@ -38,16 +38,29 @@ type FastPathClassifier struct {
 	examples []models.RouteExample
 	embedder embedding.Embedder
 	store    vectorstore.Store
+	cache    map[string]routeCacheEntry
+}
+
+type routeCacheEntry struct {
+	prediction RoutePrediction
+	expiresAt  time.Time
 }
 
 func NewFastPathClassifier(db *gorm.DB) *FastPathClassifier {
-	return &FastPathClassifier{db: db}
+	return &FastPathClassifier{db: db, cache: make(map[string]routeCacheEntry)}
 }
 
 func (c *FastPathClassifier) Predict(text string) RoutePrediction {
 	if c == nil || strings.TrimSpace(text) == "" {
 		return RoutePrediction{}
 	}
+	key := normalizeRouteQuery(text)
+	c.mu.RLock()
+	if entry, ok := c.cache[key]; ok && time.Now().Before(entry.expiresAt) {
+		c.mu.RUnlock()
+		return entry.prediction
+	}
+	c.mu.RUnlock()
 	c.ensureLoaded()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -99,7 +112,9 @@ func (c *FastPathClassifier) Predict(text string) RoutePrediction {
 	if len(list) == 0 || list[0].score < fastClassifierThreshold {
 		return RoutePrediction{}
 	}
-	return RoutePrediction{Route: list[0].route, Intent: list[0].intent, Confidence: list[0].score, MatchedText: list[0].text, Source: list[0].source}
+	prediction := RoutePrediction{Route: list[0].route, Intent: list[0].intent, Confidence: list[0].score, MatchedText: list[0].text, Source: list[0].source}
+	go c.setCache(key, prediction)
+	return prediction
 }
 
 func (c *FastPathClassifier) Reload() {
@@ -108,8 +123,22 @@ func (c *FastPathClassifier) Reload() {
 	}
 	c.mu.Lock()
 	c.loaded = false
+	c.cache = make(map[string]routeCacheEntry)
 	c.mu.Unlock()
 	c.ensureLoaded()
+}
+
+func normalizeRouteQuery(text string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
+}
+
+func (c *FastPathClassifier) setCache(key string, prediction RoutePrediction) {
+	if c == nil || key == "" || prediction.Route == "" {
+		return
+	}
+	c.mu.Lock()
+	c.cache[key] = routeCacheEntry{prediction: prediction, expiresAt: time.Now().Add(5 * time.Minute)}
+	c.mu.Unlock()
 }
 
 func (c *FastPathClassifier) ensureLoaded() {

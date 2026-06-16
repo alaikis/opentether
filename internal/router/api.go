@@ -18,6 +18,14 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	public.Post("/auth/login", h.AuthLogin)
 	public.Post("/auth/refresh", h.AuthRefresh)
 
+	// 云端官网公开接口
+	cloudPublic := api.Group("/cloud/public")
+	cloudPublic.Get("/products", h.CloudPublicProducts)
+	cloudPublic.Get("/releases", h.CloudPublicReleases)
+	cloudPublic.Get("/releases/:version", h.CloudPublicRelease)
+	cloudPublic.Get("/downloads/:id", h.CloudPublicDownload)
+	cloudPublic.Get("/site/:key", h.CloudPublicSite)
+
 	// 初始化向导
 	setup := api.Group("/setup")
 	setup.Get("/status", h.SetupStatus)
@@ -41,6 +49,36 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	// 管理员接口
 	admin := api.Group("/admin", auth)
 	adminAdmin := admin.Group("", adminOnly)
+
+	// 云端官网/版本管理
+	cloudAdmin := adminAdmin.Group("/cloud")
+	cloudAdmin.Get("/products", h.CloudAdminProducts)
+	cloudAdmin.Post("/products", h.CloudAdminSaveProduct)
+	cloudAdmin.Put("/products/:id", h.CloudAdminSaveProduct)
+	cloudAdmin.Delete("/products/:id", h.CloudAdminDeleteProduct)
+	cloudAdmin.Get("/releases", h.CloudAdminReleases)
+	cloudAdmin.Post("/releases", h.CloudAdminSaveRelease)
+	cloudAdmin.Put("/releases/:id", h.CloudAdminSaveRelease)
+	cloudAdmin.Post("/releases/:id/publish", h.CloudAdminPublishRelease)
+	cloudAdmin.Delete("/releases/:id", h.CloudAdminDeleteRelease)
+	cloudAdmin.Get("/artifacts", h.CloudAdminArtifacts)
+	cloudAdmin.Post("/artifacts", h.CloudAdminSaveArtifact)
+	cloudAdmin.Put("/artifacts/:id", h.CloudAdminSaveArtifact)
+	cloudAdmin.Delete("/artifacts/:id", h.CloudAdminDeleteArtifact)
+	cloudAdmin.Get("/site-contents", h.CloudAdminSiteContents)
+	cloudAdmin.Post("/site-contents", h.CloudAdminSaveSiteContent)
+	cloudAdmin.Put("/site-contents/:id", h.CloudAdminSaveSiteContent)
+	cloudAdmin.Delete("/site-contents/:id", h.CloudAdminDeleteSiteContent)
+	cloudAdmin.Get("/stats", h.CloudAdminStats)
+
+	// 智能体评测
+	evalAdmin := adminAdmin.Group("/eval")
+	evalAdmin.Get("/cases", h.ListEvalCases)
+	evalAdmin.Post("/cases", h.SaveEvalCase)
+	evalAdmin.Put("/cases/:id", h.SaveEvalCase)
+	evalAdmin.Delete("/cases/:id", h.DeleteEvalCase)
+	evalAdmin.Post("/cases/:id/run", h.RunEvalCase)
+	evalAdmin.Get("/runs", h.ListEvalRuns)
 
 	// 用户管理
 	admin.Get("/users", h.ListUsers)
@@ -81,6 +119,8 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Delete("/skills/:id", h.DeleteSkill)
 	adminAdmin.Post("/skills/:id/test", h.TestSkill)
 	adminAdmin.Post("/skills/:id/sync", h.SyncSkillVector)
+	adminAdmin.Get("/skills/:id/validate", h.ValidateSkill)
+	adminAdmin.Post("/skills/:id/bootstrap", h.StartSkillBootstrap)
 	admin.Get("/skills/:id/config-versions", h.ListSkillConfigVersions)
 	adminAdmin.Post("/skills/:id/config-versions/:version/restore", h.RestoreSkillConfigVersion)
 	admin.Get("/skills/route-examples", h.ListRouteExamples)
@@ -168,6 +208,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	admin.Get("/system/config", h.GetSystemConfig)
 	adminAdmin.Get("/system/readiness", h.GetSystemReadiness)
 	adminAdmin.Put("/system/config", h.UpdateSystemConfig)
+	adminAdmin.Post("/system/storage/test", h.TestStorageConfig)
 	adminAdmin.Post("/system/smtp/test", h.TestSMTP)
 
 	// === 用户接口 ===

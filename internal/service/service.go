@@ -32,6 +32,8 @@ type Services struct {
 	Soul          *SoulService              // Soul/记忆管理
 	Storage       storage.Driver            // 对象存储
 	Readiness     *ReadinessService         // 私有部署就绪检查
+	Cloud         *CloudService             // 云端官网/版本管理
+	PlatformCore  *PlatformCoreService      // 平台增强能力
 	// === 报表引擎 ===
 	ReportEngine   *ReportEngineService   // 完整报表引擎
 	ChartRenderer  *ChartRendererService  // 图表渲染
@@ -80,6 +82,8 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 		Soul:          NewSoulService(db, store),
 		Storage:       store,
 		Readiness:     NewReadinessService(db, cfg, store),
+		Cloud:         NewCloudService(db),
+		PlatformCore:  NewPlatformCoreService(db),
 		// 报表引擎
 		ReportEngine:   NewReportEngineService(db, store),
 		ChartRenderer:  NewChartRendererService(),

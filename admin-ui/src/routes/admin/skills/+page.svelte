@@ -101,6 +101,12 @@
     let formBusinessRules = "";
     let formContextMD = "";
     let formFullAccessGroups = "";
+    let formMCPEnabled = false;
+    let formMCPTransport = "http";
+    let formMCPURL = "";
+    let formMCPHeaders = "{}";
+    let formMCPCommand = "";
+    let formMCPArgs = "[]";
     let mdPreview = false;
     let showMDVersions = false;
     let configVersions: any[] = [];
@@ -179,6 +185,20 @@
             datasources = data.datasources || data || [];
         } catch {}
     }
+    async function handleMDUpload(event: Event) {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith(".md") && file.type && file.type !== "text/markdown" && file.type !== "text/plain") {
+            toast.error("请上传 .md Markdown 文件");
+            input.value = "";
+            return;
+        }
+        formContextMD = await file.text();
+        toast.success(`已导入 ${file.name}`);
+        input.value = "";
+    }
+
     function renderMD(text: string): string {
         if (!text) return "";
         let html = text
@@ -244,6 +264,7 @@
             formDataSourceID = cfg.data_source_id || "";
             formBusinessRules = cfg.business_rules || "";
             formContextMD = cfg.context_md || "";
+            loadMCPConfig(cfg);
             loadText2SQLConfig(cfg);
             loadContextMDForEditor(s.id);
         } catch {
@@ -266,6 +287,20 @@
         showModal = false;
         editingSkill = null;
     }
+    function loadMCPConfig(cfg: any) {
+        const mcp = typeof cfg.mcp === "string" ? safeJSON(cfg.mcp) : cfg.mcp;
+        formMCPEnabled = !!mcp;
+        formMCPTransport = mcp?.transport || "http";
+        formMCPURL = mcp?.url || "";
+        formMCPHeaders = JSON.stringify(mcp?.headers || {}, null, 2);
+        formMCPCommand = mcp?.command || "";
+        formMCPArgs = JSON.stringify(mcp?.args || [], null, 2);
+    }
+
+    function safeJSON(text: string) {
+        try { return JSON.parse(text); } catch { return null; }
+    }
+
     function resetText2SQLConfig() {
         formSelectedTables = {};
         formSelectedColumns = {};
@@ -278,6 +313,12 @@
         formEntityRules = [];
         formBusinessRules = "";
         formContextMD = "";
+        formMCPEnabled = false;
+        formMCPTransport = "http";
+        formMCPURL = "";
+        formMCPHeaders = "{}";
+        formMCPCommand = "";
+        formMCPArgs = "[]";
     }
     function parseKeywordsDisplay(val: string): string {
         if (!val) return "";
@@ -516,9 +557,13 @@
             if (formPromptTemplate) {
                 body.prompt_template = formPromptTemplate;
             }
+            let cfg: Record<string, any> = {};
+            if (editingSkill?.config) {
+                try { cfg = JSON.parse(editingSkill.config || "{}"); } catch { cfg = {}; }
+            }
             if (formDataSourceID && needsDataSource) {
                 const ds = datasources.find((d) => d.id === formDataSourceID);
-                const cfg: Record<string, any> = {
+                cfg = {
                     data_source_id: formDataSourceID,
                     data_source_name: ds?.name || "",
                 };
@@ -553,8 +598,25 @@
                                 })),
                         }));
                 }
-                body.config = JSON.stringify(cfg);
             }
+            if (formBusinessRules) cfg.business_rules = formBusinessRules;
+            if (formContextMD) cfg.context_md = formContextMD;
+            if (formMCPEnabled) {
+                let headers = {};
+                let args: any[] = [];
+                try { headers = JSON.parse(formMCPHeaders || "{}"); } catch { headers = {}; }
+                try { args = JSON.parse(formMCPArgs || "[]"); } catch { args = []; }
+                cfg.mcp = {
+                    transport: formMCPTransport,
+                    url: formMCPURL,
+                    headers,
+                    command: formMCPCommand,
+                    args,
+                };
+            } else {
+                delete cfg.mcp;
+            }
+            body.config = JSON.stringify(cfg);
             if (editingSkill) {
                 await api.put(`/admin/skills/${editingSkill.id}`, body);
                 toast.success("已更新");
@@ -603,6 +665,25 @@
             else toast.error(`${data.output || "测试未通过"}${score}`);
         } catch (e: any) {
             toast.error(e.message || "测试失败");
+        }
+    }
+
+    async function handleValidate(s: Skill) {
+        try {
+            const result = await api.get<any>(`/admin/skills/${s.id}/validate`);
+            const count = result.issues?.length || 0;
+            toast[count ? "info" : "success"](count ? `校验完成：${count} 条提示` : "校验通过");
+        } catch (e: any) {
+            toast.error(e.message || "校验失败");
+        }
+    }
+
+    async function handleBootstrap(s: Skill) {
+        try {
+            await api.post(`/admin/skills/${s.id}/bootstrap`);
+            toast.success("自举任务已启动，稍后到候选记忆中审核");
+        } catch (e: any) {
+            toast.error(e.message || "启动自举失败");
         }
     }
 
@@ -731,6 +812,8 @@
                         on:click|stopPropagation={() => handleTestSkill(s)}
                         ><Zap size={14} /></button
                     >
+                    <button class="px-2 py-1 rounded text-xs text-slate-500 hover:bg-blue-50 hover:text-blue-600" title="校验配置" on:click|stopPropagation={() => handleValidate(s)}>校验</button>
+                    <button class="px-2 py-1 rounded text-xs text-slate-500 hover:bg-purple-50 hover:text-purple-600" title="自举规则" on:click|stopPropagation={() => handleBootstrap(s)}>自举</button>
                     <button
                         class="p-1.5 rounded-md transition-colors {builtin
                             ? 'text-slate-300 cursor-not-allowed'
@@ -1298,6 +1381,10 @@
                                 <div class="flex gap-1">
                                     <button class="text-xs px-2 py-0.5 rounded {mdPreview ? 'bg-slate-100' : 'bg-primary-50 text-primary-700'}" on:click={() => (mdPreview = false)}>编辑</button>
                                     <button class="text-xs px-2 py-0.5 rounded {mdPreview ? 'bg-primary-50 text-primary-700' : 'bg-slate-100'}" on:click={() => (mdPreview = true)}>预览</button>
+                                    <label class="text-xs px-2 py-0.5 rounded bg-slate-100 cursor-pointer">
+                                        上传MD
+                                        <input class="hidden" type="file" accept=".md,text/markdown,text/plain" on:change={handleMDUpload} />
+                                    </label>
                                     {#if editingSkill}
                                         <button class="text-xs px-2 py-0.5 rounded bg-slate-100" on:click={() => { showMDVersions = !showMDVersions; if (showMDVersions) loadConfigVersions(); }}>版本</button>
                                     {/if}
@@ -1330,8 +1417,77 @@
                             <label class="block text-xs font-semibold text-slate-600 mb-1">全量数据权限组</label>
                             <input class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs" bind:value={formFullAccessGroups} placeholder="组ID/Code/Name, 逗号分隔。如: admin, sales_manager" />
                         </div>
+                        <div class="rounded-lg border border-slate-200 p-3 space-y-2">
+                            <label class="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                                <input type="checkbox" bind:checked={formMCPEnabled} /> 绑定 MCP
+                            </label>
+                            {#if formMCPEnabled}
+                                <div class="grid grid-cols-2 gap-2">
+                                    <label class="text-[11px] text-slate-500">Transport
+                                        <select class="mt-1 w-full px-2 py-1 border rounded text-xs" bind:value={formMCPTransport}>
+                                            <option value="http">HTTP</option>
+                                            <option value="sse">SSE</option>
+                                            <option value="stdio">STDIO</option>
+                                        </select>
+                                    </label>
+                                    <label class="text-[11px] text-slate-500">URL
+                                        <input class="mt-1 w-full px-2 py-1 border rounded text-xs" bind:value={formMCPURL} placeholder="https://.../mcp" />
+                                    </label>
+                                </div>
+                                <label class="block text-[11px] text-slate-500">Headers JSON
+                                    <textarea class="mt-1 w-full px-2 py-1 border rounded text-xs font-mono" rows="3" bind:value={formMCPHeaders} placeholder="Authorization: Bearer ..." />
+                                </label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <label class="text-[11px] text-slate-500">Command(STDIO)
+                                        <input class="mt-1 w-full px-2 py-1 border rounded text-xs" bind:value={formMCPCommand} placeholder="node/php/python" />
+                                    </label>
+                                    <label class="text-[11px] text-slate-500">Args JSON(STDIO)
+                                        <input class="mt-1 w-full px-2 py-1 border rounded text-xs font-mono" bind:value={formMCPArgs} placeholder='["server.js"]' />
+                                    </label>
+                                </div>
+                            {/if}
+                        </div>
                     </div>
                 {/if}
+            {/if}
+
+            {#if formType !== "text2sql"}
+                <div class="mt-4 space-y-3 rounded-xl border border-slate-200 p-4 bg-slate-50">
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <label class="text-xs font-semibold text-slate-600">Skill 调用说明 / MD 上下文</label>
+                            <label class="text-xs px-2 py-0.5 rounded bg-white border cursor-pointer">
+                                上传MD
+                                <input class="hidden" type="file" accept=".md,text/markdown,text/plain" on:change={handleMDUpload} />
+                            </label>
+                        </div>
+                        <textarea class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono bg-white" rows="10" bind:value={formContextMD} placeholder="请输入该 Skill 的调用说明：何时调用、接口地址、参数、鉴权、返回结构、示例等" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">业务/调用约束</label>
+                        <textarea class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white" rows="3" bind:value={formBusinessRules} placeholder="例如：调用前必须具备订单号；失败时返回错误码说明" />
+                    </div>
+                    <div class="rounded-lg border border-slate-200 p-3 space-y-2 bg-white">
+                        <label class="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                            <input type="checkbox" bind:checked={formMCPEnabled} /> 绑定 MCP
+                        </label>
+                        {#if formMCPEnabled}
+                            <div class="grid grid-cols-2 gap-2">
+                                <select class="px-2 py-1 border rounded text-xs" bind:value={formMCPTransport}>
+                                    <option value="http">HTTP</option>
+                                    <option value="sse">SSE</option>
+                                    <option value="stdio">STDIO</option>
+                                </select>
+                                <input class="px-2 py-1 border rounded text-xs" bind:value={formMCPURL} placeholder="https://.../mcp" />
+                            </div>
+                            <textarea class="w-full px-2 py-1 border rounded text-xs font-mono" rows="3" bind:value={formMCPHeaders} placeholder="Headers JSON" />
+                            <div class="grid grid-cols-2 gap-2">
+                                <input class="px-2 py-1 border rounded text-xs" bind:value={formMCPCommand} placeholder="command(STDIO)" />
+                                <input class="px-2 py-1 border rounded text-xs font-mono" bind:value={formMCPArgs} placeholder='["server.js"]' />
+                            </div>
+                        {/if}
+                    </div>
+                </div>
             {/if}
 
             <div
