@@ -71,6 +71,26 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	cloudAdmin.Delete("/site-contents/:id", h.CloudAdminDeleteSiteContent)
 	cloudAdmin.Get("/stats", h.CloudAdminStats)
 
+	// 长任务图
+	taskGraph := admin.Group("/agent-task-graphs")
+	taskGraph.Post("/", h.CreateAgentTaskGraph)
+	taskGraph.Get("/:id", h.GetAgentTaskGraph)
+	taskGraph.Get("/:id/visualization", h.GetAgentTaskGraphVisualization)
+	taskGraph.Get("/:id/events", h.StreamAgentTaskGraph)
+	taskGraph.Post("/:id/resume", h.ResumeAgentTaskGraph)
+	taskGraph.Post("/:id/cancel", h.CancelAgentTaskGraph)
+	taskGraph.Post("/:id/nodes", h.InsertAgentTaskNode)
+	taskGraph.Post("/nodes/:node_id/retry", h.RetryAgentTaskNode)
+	taskGraph.Post("/nodes/:node_id/skip", h.SkipAgentTaskNode)
+	taskGraph.Post("/nodes/:node_id/review", h.ReviewAgentTaskNode)
+	taskGraph.Post("/:id/nodes/:node_id/checkpoint-resume", h.ResumeAgentTaskNodeFromCheckpoint)
+
+	webhookAdmin := adminAdmin.Group("/webhooks")
+	webhookAdmin.Get("/", h.ListWebhookConfigs)
+	webhookAdmin.Post("/", h.SaveWebhookConfig)
+	webhookAdmin.Put("/:id", h.SaveWebhookConfig)
+	webhookAdmin.Delete("/:id", h.DeleteWebhookConfig)
+
 	// 智能体评测
 	evalAdmin := adminAdmin.Group("/eval")
 	evalAdmin.Get("/cases", h.ListEvalCases)
@@ -79,6 +99,28 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	evalAdmin.Delete("/cases/:id", h.DeleteEvalCase)
 	evalAdmin.Post("/cases/:id/run", h.RunEvalCase)
 	evalAdmin.Get("/runs", h.ListEvalRuns)
+
+	adminAdmin.Post("/sql-templates/test", h.TestSQLTemplate)
+
+	policyAdmin := adminAdmin.Group("/policies")
+	policyAdmin.Get("/", h.ListPolicies)
+	policyAdmin.Post("/", h.SavePolicy)
+	policyAdmin.Put("/:id", h.SavePolicy)
+	policyAdmin.Delete("/:id", h.DeletePolicy)
+	policyAdmin.Post("/evaluate", h.EvaluatePolicy)
+
+	precomputeAdmin := adminAdmin.Group("/precompute")
+	precomputeAdmin.Get("/jobs", h.ListPrecomputeJobs)
+	precomputeAdmin.Post("/jobs", h.SavePrecomputeJob)
+	precomputeAdmin.Put("/jobs/:id", h.SavePrecomputeJob)
+	precomputeAdmin.Delete("/jobs/:id", h.DeletePrecomputeJob)
+	precomputeAdmin.Post("/jobs/:id/run", h.RunPrecomputeJob)
+
+	reportAdmin := adminAdmin.Group("/report-templates")
+	reportAdmin.Get("/", h.ListReportTemplates)
+	reportAdmin.Post("/", h.SaveReportTemplate)
+	reportAdmin.Put("/:id", h.SaveReportTemplate)
+	reportAdmin.Delete("/:id", h.DeleteReportTemplate)
 
 	// 用户管理
 	admin.Get("/users", h.ListUsers)
@@ -210,6 +252,12 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Put("/system/config", h.UpdateSystemConfig)
 	adminAdmin.Post("/system/storage/test", h.TestStorageConfig)
 	adminAdmin.Post("/system/smtp/test", h.TestSMTP)
+
+	ragAdmin := adminAdmin.Group("/rag")
+	ragAdmin.Post("/ingest", h.RAGIngest)
+	ragAdmin.Get("/documents", h.RAGListDocuments)
+	ragAdmin.Delete("/documents/:id", h.RAGDeleteDocument)
+	ragAdmin.Get("/retrieve", h.RAGRetrieve)
 
 	// === 用户接口 ===
 	user := api.Group("/user", auth)

@@ -41,7 +41,11 @@ func (e *AgentEngine) buildText2SQLRuntimeContext(skillID, dataSourceID string) 
 	var sb strings.Builder
 	sb.WriteString("\n\n## Text2SQL 运行时学习上下文（高置信，可复用）\n")
 	for _, mem := range memories {
-		sb.WriteString(fmt.Sprintf("- [%s/%s conf=%.2f used=%d] %s\n", mem.Type, mem.Key, mem.Confidence, mem.UseCount, mem.Content))
+		content := mem.Content
+		if len(content) > 800 {
+			content = content[:800] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("- [%s/%s conf=%.2f used=%d] %s\n", mem.Type, mem.Key, mem.Confidence, mem.UseCount, content))
 	}
 	text := sb.String()
 	e.runtimeMemMu.Lock()

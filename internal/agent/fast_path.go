@@ -100,7 +100,10 @@ func (e *AgentEngine) finishFastPathInflight(key string, entry fastCacheEntry) {
 }
 
 func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, message, conversationID string) (*ChatResponse, bool, error) {
+	e.metrics.IncFastPath()
+	message = stripEnvironmentDetailsFromPrompt(message)
 	start := time.Now()
+	routeMS := int64(0)
 	annotate := func(resp *ChatResponse, source string) *ChatResponse {
 		if resp == nil {
 			return resp
@@ -111,6 +114,7 @@ func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, messag
 		resp.Data["fast_path"] = true
 		resp.Data["fast_path_source"] = source
 		resp.Data["duration_ms"] = time.Since(start).Milliseconds()
+		resp.Data["route_ms"] = routeMS
 		return resp
 	}
 	if shouldSkipFastPath(message) {
@@ -146,24 +150,29 @@ func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, messag
 	if tr, ok := parseExtendedTimeRange(message); ok && tr.IsRange {
 		if resp, ok := e.tryText2SQLRangeFastPath(ctx, user, message, tr, conversationID); ok {
 			resp = annotate(resp, "range")
-			e.setFastPathCache(cacheKey, resp, 60*time.Second)
+			e.setFastPathCache(cacheKey, resp, 120*time.Second)
 			return resp, true, nil
 		}
 	}
 
+	routeStart := time.Now()
 	route := e.routeFastPath(message)
+	if route.Route == "" && isChartDataQuery(message) {
+		route = fastPathRoute{Route: "fast_text2sql", Intent: "text2sql", Confidence: 0.9, Reason: "图表类数据查询优先 Text2SQL"}
+	}
 	if route.Route == "" {
 		route = e.routeFastPathWithSmallModel(ctx, user, message)
 	}
+	routeMS = time.Since(routeStart).Milliseconds()
 	if route.Route == "fast_text2sql" || route.Intent == "text2sql" {
 		if resp, ok := e.tryText2SQLApprovedTemplateFastPath(ctx, user, message, conversationID); ok {
 			resp = annotate(resp, "approved_template")
-			e.setFastPathCache(cacheKey, resp, 60*time.Second)
+			e.setFastPathCache(cacheKey, resp, 120*time.Second)
 			return resp, true, nil
 		}
 		if resp, ok := e.tryText2SQLTemplateFastPath(ctx, user, message, conversationID); ok {
 			resp = annotate(resp, "text2sql")
-			e.setFastPathCache(cacheKey, resp, 60*time.Second)
+			e.setFastPathCache(cacheKey, resp, 120*time.Second)
 			return resp, true, nil
 		}
 	}
@@ -305,7 +314,29 @@ func (e *AgentEngine) tryText2SQLApprovedTemplateFastPath(ctx context.Context, u
 }
 
 func templateMatchesIntent(message, intent string) bool {
-	return strings.TrimSpace(intent) == "" || strings.Contains(strings.ToLower(message), strings.ToLower(intent))
+	if strings.TrimSpace(intent) == "" {
+		return true
+	}
+	lower := strings.ToLower(message)
+	for _, token := range strings.Split(intent, ",") {
+		token = strings.TrimSpace(strings.ToLower(token))
+		if token == "" {
+			continue
+		}
+		if strings.Contains(lower, token) {
+			return true
+		}
+		if len([]rune(token)) >= 2 {
+			runes := []rune(token)
+			for i := 0; i <= len(runes)-2; i++ {
+				sub := string(runes[i : i+2])
+				if strings.Contains(lower, sub) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool) {
@@ -319,8 +350,8 @@ func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool)
 		"current_year":  fmt.Sprintf("%d", now.Year()),
 		"current_month": fmt.Sprintf("%02d", int(now.Month())),
 	}
-	if employee := extractTemplateEmployeeName(message); employee != "" {
-		vars["employee_name"] = employee
+	for k, v := range extractTemplateVariables(message) {
+		vars[k] = v
 	}
 	out := tpl
 	for k, v := range vars {
@@ -334,12 +365,24 @@ func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool)
 	return out, true
 }
 
-func extractTemplateEmployeeName(message string) string {
-	m := regexp.MustCompile(`^\s*([\p{Han}]{2,4})`).FindStringSubmatch(message)
-	if len(m) > 1 {
-		return m[1]
+func extractTemplateVariables(message string) map[string]string {
+	vars := map[string]string{}
+	if m := regexp.MustCompile(`^\s*([\p{Han}]{2,4})`).FindStringSubmatch(message); len(m) > 1 {
+		vars["employee_name"] = m[1]
 	}
-	return ""
+	patterns := map[string]string{
+		"country":     `国家[:：\s]+([^，,；;\s]+)`,
+		"buyer":       `买家[:：\s]+([^，,；;\s]+)`,
+		"mpn":         `(?i)mpn[:：\s]+([^，,；;\s]+)`,
+		"sku":         `(?i)sku[:：\s]+([^，,；;\s]+)`,
+		"title_regex": `标题(?:正则)?[:：\s]+([^，,；;]+)`,
+	}
+	for key, pattern := range patterns {
+		if m := regexp.MustCompile(pattern).FindStringSubmatch(message); len(m) > 1 {
+			vars[key] = strings.TrimSpace(m[1])
+		}
+	}
+	return vars
 }
 
 func (e *AgentEngine) executeRenderedSQLTemplate(ctx context.Context, user *UserContext, message, sqlText, dataSourceID, conversationID string) (*ChatResponse, bool) {
@@ -422,6 +465,14 @@ var chineseMonthMap = map[string]time.Month{
 	"4月": time.April, "5月": time.May, "6月": time.June,
 	"7月": time.July, "8月": time.August, "9月": time.September,
 	"10月": time.October, "11月": time.November, "12月": time.December,
+}
+
+func isChartDataQuery(message string) bool {
+	m := strings.ToLower(message)
+	if strings.Contains(m, "excel") || strings.Contains(m, "xlsx") || strings.Contains(message, "导出") || strings.Contains(message, "下载") {
+		return false
+	}
+	return strings.Contains(message, "图表") || strings.Contains(message, "折线图") || strings.Contains(message, "柱状图") || strings.Contains(message, "趋势图") || strings.Contains(message, "变化图")
 }
 
 func shouldSkipFastPath(message string) bool {

@@ -24,14 +24,17 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Type        string `yaml:"type"` // sqlite, mysql, postgres
-	Host        string `yaml:"host"`
-	Port        int    `yaml:"port"`
-	Name        string `yaml:"name"`
-	User        string `yaml:"user"`
-	Password    string `yaml:"password"`
-	SSLMode     string `yaml:"sslmode"`
-	AutoMigrate bool   `yaml:"auto_migrate"`
+	Type            string `yaml:"type"` // sqlite, mysql, postgres
+	Host            string `yaml:"host"`
+	Port            int    `yaml:"port"`
+	Name            string `yaml:"name"`
+	User            string `yaml:"user"`
+	Password        string `yaml:"password"`
+	SSLMode         string `yaml:"sslmode"`
+	AutoMigrate     bool   `yaml:"auto_migrate"`
+	MaxOpenConns    int    `yaml:"max_open_conns"`
+	MaxIdleConns    int    `yaml:"max_idle_conns"`
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime_sec"`
 }
 
 type SecurityConfig struct {

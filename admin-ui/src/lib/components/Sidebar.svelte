@@ -51,10 +51,7 @@
     })();
 
     let openGroup = "";
-    let initialRoute = "";
-    $: if (initialRoute === "" && $page.url.pathname)
-        initialRoute = $page.url.pathname;
-    $: if (initialRoute && initialRoute === $page.url.pathname) {
+    $: {
         const need = groups.groups.find((g) =>
             g.items.some((it) => active(it)),
         );
@@ -70,13 +67,20 @@
     }
 
     let popupGroup = "";
+    let popupItem = "";
     let popupTimer: ReturnType<typeof setTimeout> | null = null;
     function showPopup(id: string) {
         if (popupTimer) clearTimeout(popupTimer);
         popupGroup = id;
+        popupItem = "";
+    }
+    function showItemPopup(label: string) {
+        if (popupTimer) clearTimeout(popupTimer);
+        popupItem = label;
+        popupGroup = "";
     }
     function hidePopup() {
-        popupTimer = setTimeout(() => (popupGroup = ""), 200);
+        popupTimer = setTimeout(() => { popupGroup = ""; popupItem = ""; }, 150);
     }
     function keepPopup() {
         if (popupTimer) clearTimeout(popupTimer);
@@ -156,7 +160,7 @@
                     <div class="mx-3 my-3 border-t border-blue-800/30"></div>
                     {#if popupGroup === group.id}
                         <div
-                            class="absolute left-14 -top-2 z-50 bg-white rounded-xl shadow-xl border border-slate-200 py-2 min-w-[170px]"
+                            class="absolute left-14 top-0 z-50 bg-white rounded-xl shadow-xl border border-slate-200 py-2 min-w-[170px]"
                             on:mouseenter={keepPopup}
                             on:mouseleave={hidePopup}
                         >
@@ -188,20 +192,35 @@
         {/each}
 
         {#each groups.ungrouped as item}
-            <a
-                href={item.href}
-                title={$sidebarCollapsed ? item.label : undefined}
-                class="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors {active(
-                    item,
-                )
-                    ? 'bg-blue-500/20 text-blue-300 font-medium'
-                    : 'text-blue-200/50 hover:text-blue-100 hover:bg-blue-800/30'}"
+            <div
+                class="relative"
+                on:mouseenter={() => showItemPopup(item.label)}
+                on:mouseleave={hidePopup}
             >
-                <svelte:component this={item.icon} class="w-5 h-5 shrink-0" />
-                {#if !$sidebarCollapsed}<span class="truncate"
-                        >{item.label}</span
-                    >{/if}
-            </a>
+                <a
+                    href={item.href}
+                    title={$sidebarCollapsed ? item.label : undefined}
+                    class="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors {active(
+                        item,
+                    )
+                        ? 'bg-blue-500/20 text-blue-300 font-medium'
+                        : 'text-blue-200/50 hover:text-blue-100 hover:bg-blue-800/30'}"
+                >
+                    <svelte:component this={item.icon} class="w-5 h-5 shrink-0" />
+                    {#if !$sidebarCollapsed}<span class="truncate"
+                            >{item.label}</span
+                        >{/if}
+                </a>
+                {#if $sidebarCollapsed && popupItem === item.label}
+                    <div
+                        class="absolute left-14 -top-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 py-2 px-3 min-w-[140px]"
+                        on:mouseenter={keepPopup}
+                        on:mouseleave={hidePopup}
+                    >
+                        <span class="text-sm text-slate-700 font-medium">{item.label}</span>
+                    </div>
+                {/if}
+            </div>
         {/each}
     </nav>
 

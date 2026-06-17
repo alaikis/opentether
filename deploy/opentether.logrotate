@@ -1,0 +1,13 @@
+/var/log/opentether/*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d
+    maxsize 50M
+    create 0640 opentether opentether
+}

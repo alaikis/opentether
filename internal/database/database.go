@@ -95,6 +95,15 @@ func Migrate(db *gorm.DB) error {
 		&models.CloudSiteContent{},
 		&models.EvalCase{},
 		&models.EvalRun{},
+		&models.AccessPolicy{},
+		&models.PrecomputeJob{},
+		&models.AgentTaskGraph{},
+		&models.AgentTaskNode{},
+		&models.AgentTaskOutput{},
+		&models.WebhookConfig{},
+		&models.WebhookDeliveryLog{},
+		&models.RAGDocument{},
+		&models.RAGChunk{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)

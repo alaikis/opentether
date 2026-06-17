@@ -49,6 +49,7 @@
         role: "user" | "assistant" | "system";
         content: string;
         thinking?: string;
+        thinkingCollapsed?: boolean;
         skill_used?: string;
         error?: string;
         events?: StreamEvent[];
@@ -77,6 +78,7 @@
     let input = "";
     let streaming = false;
     let abortCtrl: AbortController | null = null;
+    let messageQueue: string[] = [];
     let sidebarOpen = true;
     let convSearch = "";
 
@@ -233,7 +235,13 @@
     // ── Send / Stream ──────────────────────────────
     async function handleSend() {
         let content = input.trim();
-        if (!content || streaming) return;
+        if (!content) return;
+        if (streaming) {
+            messageQueue = [...messageQueue, content];
+            input = "";
+            toast.info("已排队，当前回复完成后自动发送");
+            return;
+        }
         messages = [...messages, { role: "user", content }];
         input = "";
         await tick();
@@ -285,7 +293,7 @@
                         let data = line.slice(6);
                         if (data === "[DONE]") break;
                         if (firstChunk) {
-                            messages[msgIdx].thinking = undefined;
+                            messages[msgIdx].thinkingCollapsed = true;
                             firstChunk = false;
                         }
 
@@ -328,6 +336,13 @@
             await loadConversations();
             if (!activeConvId && conversations.length > 0) {
                 activeConvId = conversations[0].id;
+            }
+            if (messageQueue.length > 0) {
+                let next = messageQueue.shift()!;
+                messageQueue = messageQueue;
+                input = next;
+                await tick();
+                handleSend();
             }
         }
     }
@@ -993,14 +1008,16 @@
                                 class="min-w-0 max-w-full md:max-w-[75%] group/msg overflow-hidden"
                             >
                                 {#if msg.role === "assistant"}
-                                    {#if streaming && i === messages.length - 1 && msg.thinking}
-                                        <div
-                                            class="flex items-center gap-2 text-xs text-slate-400 mb-1 ml-1"
-                                        >
-                                            <Loader2
-                                                size={12}
-                                                class="animate-spin"
-                                            />
+                                    {#if msg.thinking && !msg.thinking.startsWith("正在思考")}
+                                        <details class="mb-2 rounded-xl border border-blue-200 bg-blue-50/50 overflow-hidden" bind:open={msg.thinkingCollapsed}>
+                                            <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-blue-700 flex items-center gap-2" on:click={() => (msg.thinkingCollapsed = !msg.thinkingCollapsed)}>
+                                                <Sparkles size={12} />思考过程
+                                            </summary>
+                                            <div class="px-3 pb-2 text-xs text-blue-600 whitespace-pre-wrap">{msg.thinking}</div>
+                                        </details>
+                                    {:else if streaming && i === messages.length - 1 && msg.thinking}
+                                        <div class="flex items-center gap-2 text-xs text-slate-400 mb-1 ml-1">
+                                            <Loader2 size={12} class="animate-spin" />
                                             {msg.thinking}
                                         </div>
                                     {/if}

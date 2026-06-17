@@ -50,15 +50,21 @@ func NewS3Storage(cfg S3Config) *S3Storage {
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
 	}
+	endpoint := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(cfg.Endpoint), "https://"), "http://")
+	endpoint = strings.TrimRight(endpoint, "/")
+	pathStyle := cfg.PathStyle
+	if strings.Contains(endpoint, "aliyuncs.com") {
+		pathStyle = false
+	}
 	return &S3Storage{
-		endpoint:     cfg.Endpoint,
+		endpoint:     endpoint,
 		region:       cfg.Region,
 		accessKey:    cfg.AccessKey,
 		secretKey:    cfg.SecretKey,
 		bucket:       cfg.Bucket,
 		customDomain: strings.TrimRight(cfg.CustomDomain, "/"),
 		useSSL:       cfg.UseSSL,
-		pathStyle:    cfg.PathStyle,
+		pathStyle:    pathStyle,
 		client:       &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -72,17 +78,29 @@ func (s *S3Storage) baseURL() string {
 }
 
 func (s *S3Storage) objectURL(key string) string {
+	key = strings.TrimLeft(key, "/")
 	if s.pathStyle {
 		return s.baseURL() + "/" + s.bucket + "/" + key
 	}
-	return s.baseURL() + "/" + key
+	return s.virtualHostedBaseURL() + "/" + key
 }
 
 func (s *S3Storage) bucketURL() string {
 	if s.pathStyle {
 		return s.baseURL() + "/" + s.bucket
 	}
-	return s.baseURL()
+	return s.virtualHostedBaseURL()
+}
+
+func (s *S3Storage) virtualHostedBaseURL() string {
+	scheme := "http"
+	if s.useSSL {
+		scheme = "https"
+	}
+	if strings.HasPrefix(s.endpoint, s.bucket+".") {
+		return scheme + "://" + s.endpoint
+	}
+	return scheme + "://" + s.bucket + "." + s.endpoint
 }
 
 func (s *S3Storage) Save(ctx context.Context, path string, data []byte, contentType string) (string, error) {
@@ -93,7 +111,9 @@ func (s *S3Storage) Save(ctx context.Context, path string, data []byte, contentT
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
-	req.Header.Set("x-amz-acl", "public-read")
+	if !s.isAliyunOSS() && !s.isTencentCOS() {
+		req.Header.Set("x-amz-acl", "public-read")
+	}
 
 	// Compute payload hash
 	h := sha256.New()
@@ -159,6 +179,14 @@ func (s *S3Storage) Exists(ctx context.Context, path string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
+func (s *S3Storage) isAliyunOSS() bool {
+	return strings.Contains(s.endpoint, "aliyuncs.com")
+}
+
+func (s *S3Storage) isTencentCOS() bool {
+	return strings.Contains(s.endpoint, "myqcloud.com")
+}
+
 func (s *S3Storage) PublicURL(path string) string {
 	if s.customDomain != "" {
 		return s.customDomain + "/" + strings.TrimLeft(path, "/")
@@ -181,10 +209,15 @@ func (s *S3Storage) signRequest(req *http.Request, payloadHash string) error {
 	}
 	canonicalQuery := req.URL.RawQuery
 
+	signedHeaderNames := []string{"host", "x-amz-content-sha256", "x-amz-date"}
 	canonicalHeaders := "host:" + req.Host + "\n"
+	if acl := req.Header.Get("x-amz-acl"); acl != "" {
+		canonicalHeaders += "x-amz-acl:" + strings.TrimSpace(acl) + "\n"
+		signedHeaderNames = []string{"host", "x-amz-acl", "x-amz-content-sha256", "x-amz-date"}
+	}
 	canonicalHeaders += "x-amz-content-sha256:" + payloadHash + "\n"
 	canonicalHeaders += "x-amz-date:" + datetimeStr + "\n"
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	signedHeaders := strings.Join(signedHeaderNames, ";")
 
 	canonicalReq := strings.Join([]string{
 		req.Method,
@@ -255,6 +288,11 @@ func New(cfg Config) (Driver, error) {
 			PathStyle:    cfg.S3.PathStyle,
 		})
 		return s3, nil
+	case "oss":
+		return NewOSSStorage(OSSConfig{Endpoint: cfg.S3.Endpoint, AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey, Bucket: cfg.S3.Bucket, CustomDomain: cfg.S3.CustomDomain, UseSSL: cfg.S3.UseSSL}), nil
+	case "cos":
+		cos := NewS3Storage(S3Config{Endpoint: cfg.S3.Endpoint, Region: cfg.S3.Region, AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey, Bucket: cfg.S3.Bucket, CustomDomain: cfg.S3.CustomDomain, UseSSL: cfg.S3.UseSSL, PathStyle: false})
+		return cos, nil
 	default:
 		return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
 	}

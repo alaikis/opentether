@@ -333,7 +333,7 @@ func NewProviderService(db *gorm.DB) *ProviderService {
 
 func (s *ProviderService) List() ([]models.Provider, error) {
 	var providers []models.Provider
-	err := s.db.Where("enabled = ?", true).Order("created_at DESC").Find(&providers).Error
+	err := s.db.Order("created_at DESC").Find(&providers).Error
 	return providers, err
 }
 
@@ -367,7 +367,13 @@ func (s *ProviderService) Update(id string, input UpdateProviderInput) (*models.
 	if err := s.db.Where("id = ?", id).First(&provider).Error; err != nil {
 		return nil, err
 	}
-
+	if !input.Enabled {
+		var count int64
+		s.db.Model(&models.Provider{}).Where("enabled = ? AND id != ?", true, id).Count(&count)
+		if count == 0 {
+			return nil, ErrProviderLastEnabled
+		}
+	}
 	updates := map[string]interface{}{
 		"provider_name": input.ProviderName,
 		"api_base":      input.APIBase,
@@ -386,7 +392,7 @@ func (s *ProviderService) Update(id string, input UpdateProviderInput) (*models.
 }
 
 func (s *ProviderService) Delete(id string) error {
-	return s.db.Delete(&models.Provider{}, id).Error
+	return s.db.Where("id = ?", id).Delete(&models.Provider{}).Error
 }
 
 func (s *ProviderService) Test(id string) (map[string]interface{}, error) {
@@ -698,6 +704,7 @@ type SkillService struct {
 }
 
 var ErrBuiltinSkillProtected = errors.New("system built-in skills cannot be modified")
+var ErrProviderLastEnabled = errors.New("不能禁用最后一个已启用的 Provider，至少保留一个可用 Provider")
 
 func NewSkillService(db *gorm.DB, devMode bool, stores ...storage.Driver) *SkillService {
 	var store storage.Driver

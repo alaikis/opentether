@@ -584,7 +584,9 @@
                     <label class="block text-xs font-medium text-slate-600 mb-1">存储类型</label>
                     <select bind:value={config.storage.type} class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
                         <option value="local">本地文件</option>
-                        <option value="s3">S3/OSS/MinIO</option>
+                        <option value="s3">S3/MinIO</option>
+                        <option value="oss">阿里云 OSS</option>
+                        <option value="cos">腾讯云 COS</option>
                     </select>
                 </div>
                 {#if config.storage.type === "local"}
@@ -632,7 +634,7 @@
                 {/if}
                 <div class="flex items-center gap-3">
                     <button class="px-4 py-2 rounded-lg bg-slate-800 text-white text-sm hover:bg-slate-700" on:click={testStorage}>测试对象存储</button>
-                    <p class="text-xs text-slate-500">修改对象存储后通常需要重启服务，以重新初始化 storage driver。生成文件链接会使用这里配置的公开 URL。</p>
+                    <div class="text-xs text-slate-500">修改对象存储后通常需要重启服务，以重新初始化 storage driver。生成文件链接会使用这里配置的公开 URL。</div>
                 </div>
             </div>
         {/if}

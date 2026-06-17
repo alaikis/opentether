@@ -39,8 +39,11 @@ type AgentEngine struct {
 	store           storage.Driver
 	sqlAuditor      text2sql.AuditRecorder
 	externalDBPool  *database.ExternalDBPoolManager
-	mcpProvider     MCPToolProvider
-	fastClassifier  *FastPathClassifier
+mcpProvider    MCPToolProvider
+	fastClassifier *FastPathClassifier
+	metrics         *Metrics
+	selfLearning    *SelfLearning
+	ragService      interface{ BuildContext(string, int) string }
 	fastCacheMu     sync.Mutex
 	fastCache       map[string]fastCacheEntry
 	fastInflight    map[string]chan fastCacheEntry
@@ -164,6 +167,8 @@ func NewAgentEngineWithExternalDBPool(db *gorm.DB, cfg *config.Config, store sto
 		store:           store,
 		externalDBPool:  externalDBPool,
 		fastClassifier:  NewFastPathClassifier(db),
+		metrics:         new(Metrics),
+		selfLearning:    NewSelfLearning(db),
 		fastCache:       make(map[string]fastCacheEntry),
 		fastInflight:    make(map[string]chan fastCacheEntry),
 		runtimeMemCache: make(map[string]runtimeMemCacheEntry),
@@ -2090,6 +2095,11 @@ func (m *MemoryManager) SaveConversationMemory(userID, userQuery, assistantReply
 
 func extractTopic(query string) string {
 	return ""
+}
+
+func (e *AgentEngine) fetchRAGContext(query string) string {
+	if e.ragService == nil { return "" }
+	return e.ragService.BuildContext(query, 2000)
 }
 
 var _ = json.Marshal // use json

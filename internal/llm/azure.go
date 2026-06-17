@@ -146,8 +146,8 @@ func (c *AzureClient) readStream(body io.Reader, stream *StreamReader) {
 			return
 		}
 
-		if len(delta.Choices) > 0 && delta.Choices[0].Delta.Content != "" {
-			stream.Chunks <- delta.Choices[0].Delta.Content
+		if s := contentString(delta.Choices[0].Delta.Content); s != "" {
+			stream.Chunks <- s
 		}
 
 		if len(delta.Choices) > 0 && delta.Choices[0].FinishReason != "" {
@@ -218,7 +218,7 @@ func (c *AzureClient) convertResponse(resp OpenAIResponse) *ChatResponse {
 
 	choice := resp.Choices[0]
 	return &ChatResponse{
-		Content:      choice.Message.Content,
+		Content:      contentString(choice.Message.Content),
 		Model:        resp.Model,
 		FinishReason: choice.FinishReason,
 		Usage: Usage{

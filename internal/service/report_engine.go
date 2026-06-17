@@ -687,6 +687,7 @@ th.sort-desc::after { content: " \\25BC"; font-size: 10px; }
 // buildCSV returns CSV-encoded bytes for the given columns and rows.
 func (s *ReportEngineService) buildCSV(columns []string, rows [][]interface{}) []byte {
 	var buf bytes.Buffer
+	buf.Write([]byte{0xEF, 0xBB, 0xBF})
 	writer := csv.NewWriter(&buf)
 
 	if len(columns) > 0 {

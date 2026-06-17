@@ -24,13 +24,67 @@ type Client interface {
 
 // ChatRequest represents a chat completion request
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
-	TopP        float64   `json:"top_p,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-	Stop        []string  `json:"stop,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Temperature    float64         `json:"temperature,omitempty"`
+	TopP           float64         `json:"top_p,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	Stop           []string        `json:"stop,omitempty"`
+	Tools          []Tool          `json:"tools,omitempty"`
+	ToolChoice     string          `json:"tool_choice,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+type ResponseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema interface{} `json:"json_schema,omitempty"`
+}
+
+type Message struct {
+	Role         string        `json:"role"`
+	Content      string        `json:"content"`
+	Name         string        `json:"name,omitempty"`
+	ContentParts []ContentPart `json:"content_parts,omitempty"`
+}
+
+type ContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL *struct {
+		URL    string `json:"url"`
+		Detail string `json:"detail,omitempty"`
+	} `json:"image_url,omitempty"`
+}
+
+type Tool struct {
+	Type     string      `json:"type"`
+	Function FunctionDef `json:"function"`
+}
+
+type FunctionDef struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ChatResponse struct {
+	Content      string
+	Model        string
+	FinishReason string
+	ToolCalls    []ToolCall
+	Usage        Usage
 }
 
 // Validate validates the chat request
@@ -42,21 +96,6 @@ func (r *ChatRequest) Validate() error {
 		return errors.New("model cannot be empty")
 	}
 	return nil
-}
-
-// Message represents a single message in the conversation
-type Message struct {
-	Role    string `json:"role"` // system, user, assistant
-	Content string `json:"content"`
-	Name    string `json:"name,omitempty"`
-}
-
-// ChatResponse represents a chat completion response
-type ChatResponse struct {
-	Content      string
-	Model        string
-	FinishReason string
-	Usage        Usage
 }
 
 // Usage represents token usage information

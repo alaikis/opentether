@@ -1173,10 +1173,12 @@
                     <div class="space-y-3">
                         <div class="inline-flex bg-slate-100 rounded-lg p-1">
                             <button
+                                type="button"
                                 class="px-3 py-1.5 rounded-md text-xs font-medium {activeRulesTab === 'metric' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}"
                                 on:click={() => (activeRulesTab = "metric")}
                             >指标规则</button>
                             <button
+                                type="button"
                                 class="px-3 py-1.5 rounded-md text-xs font-medium {activeRulesTab === 'entity' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}"
                                 on:click={() => (activeRulesTab = "entity")}
                             >实体规则</button>
@@ -1186,9 +1188,12 @@
                             <div class="bg-white rounded-lg border p-3">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="text-xs font-semibold text-slate-600">指标规则</label>
-                                    <button class="text-xs text-primary-600" on:click={addMetricRule}>+ 添加</button>
+                                    <button type="button" class="text-xs text-primary-600" on:click={addMetricRule}>+ 添加</button>
                                 </div>
                                 <div class="space-y-2">
+                                    {#if formMetricRules.length === 0}
+                                        <div class="text-xs text-slate-400 bg-slate-50 border border-dashed rounded-lg p-3">暂无指标规则，点击“+ 添加”创建。</div>
+                                    {/if}
                                     {#each formMetricRules as r, i}
                                         <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.4fr_1fr_auto] gap-2 items-center bg-slate-50 p-2 rounded-lg">
                                             <input class="px-2 py-1 border rounded text-xs" placeholder="指标名" bind:value={r.metric} />
@@ -1212,9 +1217,12 @@
                             <div class="bg-white rounded-lg border p-3">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="text-xs font-semibold text-slate-600">实体规则</label>
-                                    <button class="text-xs text-primary-600" on:click={addEntityRule}>+ 添加</button>
+                                    <button type="button" class="text-xs text-primary-600" on:click={addEntityRule}>+ 添加</button>
                                 </div>
                                 <div class="space-y-2">
+                                    {#if formEntityRules.length === 0}
+                                        <div class="text-xs text-slate-400 bg-slate-50 border border-dashed rounded-lg p-3">暂无实体规则，点击“+ 添加”创建。</div>
+                                    {/if}
                                     {#each formEntityRules as r, i}
                                         <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 items-center bg-slate-50 p-2 rounded-lg">
                                             <input class="px-2 py-1 border rounded text-xs" placeholder="实体，如 员工/客户/产品" bind:value={r.entity} />

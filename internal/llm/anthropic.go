@@ -156,7 +156,23 @@ func (c *AnthropicClient) convertRequest(req ChatRequest) AnthropicRequest {
 		Temperature:   req.Temperature,
 		TopP:          req.TopP,
 		StopSequences: req.Stop,
+		Tools:         convertToAnthropicTools(req.Tools),
 	}
+}
+
+func convertToAnthropicTools(tools []Tool) []AnthropicTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]AnthropicTool, 0, len(tools))
+	for _, t := range tools {
+		schema := t.Function.Parameters
+		if schema == nil {
+			schema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+		}
+		out = append(out, AnthropicTool{Name: t.Function.Name, Description: t.Function.Description, InputSchema: schema})
+	}
+	return out
 }
 
 func (c *AnthropicClient) convertResponse(resp AnthropicResponse) *ChatResponse {
@@ -167,9 +183,13 @@ func (c *AnthropicClient) convertResponse(resp AnthropicResponse) *ChatResponse 
 	}
 
 	content := ""
+	var toolCalls []ToolCall
 	for _, block := range resp.Content {
 		if block.Type == "text" {
 			content += block.Text
+		}
+		if block.Type == "tool_use" && block.Name != "" {
+			toolCalls = append(toolCalls, ToolCall{ID: block.ID, Type: "function", Function: FunctionCall{Name: block.Name, Arguments: string(block.Input)}})
 		}
 	}
 
@@ -177,6 +197,7 @@ func (c *AnthropicClient) convertResponse(resp AnthropicResponse) *ChatResponse 
 		Content:      content,
 		Model:        resp.Model,
 		FinishReason: string(resp.StopReason),
+		ToolCalls:    toolCalls,
 		Usage: Usage{
 			PromptTokens:     resp.Usage.InputTokens,
 			CompletionTokens: resp.Usage.OutputTokens,
@@ -195,6 +216,13 @@ type AnthropicRequest struct {
 	Temperature   float64            `json:"temperature,omitempty"`
 	TopP          float64            `json:"top_p,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool    `json:"tools,omitempty"`
+}
+
+type AnthropicTool struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	InputSchema map[string]interface{} `json:"input_schema"`
 }
 
 type AnthropicMessage struct {
@@ -213,8 +241,11 @@ type AnthropicResponse struct {
 }
 
 type AnthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type AnthropicStopReason string

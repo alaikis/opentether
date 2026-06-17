@@ -34,6 +34,9 @@ type Services struct {
 	Readiness     *ReadinessService         // 私有部署就绪检查
 	Cloud         *CloudService             // 云端官网/版本管理
 	PlatformCore  *PlatformCoreService      // 平台增强能力
+	AgentTasks    *AgentTaskService         // 长任务图
+	Webhook       *WebhookService           // Webhook 通知
+	RAG           *RAGService               // RAG 检索增强
 	// === 报表引擎 ===
 	ReportEngine   *ReportEngineService   // 完整报表引擎
 	ChartRenderer  *ChartRendererService  // 图表渲染
@@ -58,6 +61,10 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 		time.Sleep(2 * time.Second)
 		agentSvc.AutoRecoverRuntimeJobs(10)
 	}()
+	platformCore := NewPlatformCoreService(db)
+	platformCore.SetAgentService(agentSvc)
+	agentTasks := NewAgentTaskService(db)
+	agentTasks.SetAgentService(agentSvc)
 
 	return &Services{
 		Auth:         NewAuthService(db, cfg),
@@ -83,7 +90,10 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 		Storage:       store,
 		Readiness:     NewReadinessService(db, cfg, store),
 		Cloud:         NewCloudService(db),
-		PlatformCore:  NewPlatformCoreService(db),
+		PlatformCore:  platformCore,
+		AgentTasks:    agentTasks,
+		Webhook:       NewWebhookService(db),
+		RAG:           NewRAGService(db),
 		// 报表引擎
 		ReportEngine:   NewReportEngineService(db, store),
 		ChartRenderer:  NewChartRendererService(),

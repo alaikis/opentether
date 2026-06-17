@@ -137,8 +137,10 @@ func (c *OpenAIClient) readStream(body io.Reader, stream *StreamReader) {
 			return
 		}
 
-		if len(delta.Choices) > 0 && delta.Choices[0].Delta.Content != "" {
-			stream.Chunks <- delta.Choices[0].Delta.Content
+		if len(delta.Choices) > 0 {
+			if s := contentString(delta.Choices[0].Delta.Content); s != "" {
+				stream.Chunks <- s
+			}
 		}
 
 		// Check for finish
@@ -146,6 +148,13 @@ func (c *OpenAIClient) readStream(body io.Reader, stream *StreamReader) {
 			break
 		}
 	}
+}
+
+func contentString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func (c *OpenAIClient) GetModel() string {
@@ -159,9 +168,15 @@ func (c *OpenAIClient) GetProviderType() string {
 func (c *OpenAIClient) convertRequest(req ChatRequest) OpenAIRequest {
 	messages := make([]OpenAIMessage, len(req.Messages))
 	for i, msg := range req.Messages {
+		content := interface{}(msg.Content)
+		if len(msg.ContentParts) > 0 {
+			parts := make([]ContentPart, len(msg.ContentParts))
+			copy(parts, msg.ContentParts)
+			content = parts
+		}
 		messages[i] = OpenAIMessage{
 			Role:    msg.Role,
-			Content: msg.Content,
+			Content: content,
 			Name:    msg.Name,
 		}
 	}
@@ -174,6 +189,18 @@ func (c *OpenAIClient) convertRequest(req ChatRequest) OpenAIRequest {
 		TopP:        req.TopP,
 		Stream:      req.Stream,
 		Stop:        req.Stop,
+	}
+	if req.ResponseFormat != nil {
+		openAIReq.ResponseFormat = &OpenAIResponseFormat{Type: req.ResponseFormat.Type, JSONSchema: req.ResponseFormat.JSONSchema}
+	}
+	if len(req.Tools) > 0 {
+		openAIReq.Tools = make([]OpenAITool, len(req.Tools))
+		for i, t := range req.Tools {
+			openAIReq.Tools[i] = OpenAITool{Type: t.Type, Function: OpenAIFunctionDef{Name: t.Function.Name, Description: t.Function.Description, Parameters: t.Function.Parameters}}
+		}
+	}
+	if req.ToolChoice != "" {
+		openAIReq.ToolChoice = req.ToolChoice
 	}
 
 	// Set defaults
@@ -195,10 +222,16 @@ func (c *OpenAIClient) convertResponse(resp OpenAIResponse) *ChatResponse {
 	}
 
 	choice := resp.Choices[0]
+	msg := choice.Message
+	var toolCalls []ToolCall
+	for _, tc := range msg.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{ID: tc.ID, Type: tc.Type, Function: FunctionCall{Name: tc.Function.Name, Arguments: tc.Function.Arguments}})
+	}
 	return &ChatResponse{
-		Content:      choice.Message.Content,
+		Content:      contentString(msg.Content),
 		Model:        resp.Model,
 		FinishReason: choice.FinishReason,
+		ToolCalls:    toolCalls,
 		Usage: Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
@@ -210,19 +243,50 @@ func (c *OpenAIClient) convertResponse(resp OpenAIResponse) *ChatResponse {
 // OpenAI API types
 
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
-	TopP        float64         `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
+	Model          string                `json:"model"`
+	Messages       []OpenAIMessage       `json:"messages"`
+	MaxTokens      int                   `json:"max_tokens,omitempty"`
+	Temperature    float64               `json:"temperature,omitempty"`
+	TopP           float64               `json:"top_p,omitempty"`
+	Stream         bool                  `json:"stream,omitempty"`
+	Stop           []string              `json:"stop,omitempty"`
+	Tools          []OpenAITool          `json:"tools,omitempty"`
+	ToolChoice     interface{}           `json:"tool_choice,omitempty"`
+	ResponseFormat *OpenAIResponseFormat `json:"response_format,omitempty"`
+}
+
+type OpenAIResponseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema interface{} `json:"json_schema,omitempty"`
 }
 
 type OpenAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Name    string `json:"name,omitempty"`
+	Role      string           `json:"role"`
+	Content   interface{}      `json:"content"`
+	Name      string           `json:"name,omitempty"`
+	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+}
+
+type OpenAITool struct {
+	Type     string            `json:"type"`
+	Function OpenAIFunctionDef `json:"function"`
+}
+
+type OpenAIFunctionDef struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+}
+
+type OpenAIToolCall struct {
+	ID       string                `json:"id"`
+	Type     string                `json:"type"`
+	Function OpenAIFunctionCallDef `json:"function"`
+}
+
+type OpenAIFunctionCallDef struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type OpenAIResponse struct {

@@ -59,6 +59,18 @@
             group: "概览",
         },
         {
+            href: "/admin/observability",
+            label: "观测看板",
+            icon: Activity,
+            group: "概览",
+        },
+        {
+            href: "/admin/policies",
+            label: "策略中心",
+            icon: Shield,
+            group: "访问控制",
+        },
+        {
             href: "/admin/users",
             label: "用户管理",
             icon: Users,
@@ -95,6 +107,24 @@
             group: "数据与技能",
         },
         {
+            href: "/admin/sql-templates",
+            label: "SQL 模板",
+            icon: Database,
+            group: "数据与技能",
+        },
+        {
+            href: "/admin/precompute",
+            label: "预计算指标",
+            icon: Activity,
+            group: "数据与技能",
+        },
+        {
+            href: "/admin/report-designer",
+            label: "报表设计器",
+            icon: ScrollText,
+            group: "数据与技能",
+        },
+        {
             href: "/admin/tasks",
             label: "定时任务",
             icon: Calendar,
@@ -119,6 +149,12 @@
             group: "自动化",
         },
         {
+            href: "/admin/mcp-debug",
+            label: "MCP 调试台",
+            icon: Server,
+            group: "自动化",
+        },
+        {
             href: "/admin/cloud",
             label: "云端管理",
             icon: Server,
@@ -126,8 +162,20 @@
         },
         {
             href: "/admin/runtime-jobs",
-            label: "运行任务",
+            label: "运行时任务",
             icon: Activity,
+            group: "自动化",
+        },
+        {
+            href: "/admin/agent-tasks",
+            label: "长任务图",
+            icon: Activity,
+            group: "自动化",
+        },
+        {
+            href: "/admin/webhooks",
+            label: "Webhook",
+            icon: Server,
             group: "自动化",
         },
         { href: "/admin/user", label: "AI 对话", icon: Bot },
