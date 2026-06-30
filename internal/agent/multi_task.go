@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 
@@ -70,13 +69,6 @@ func BuildMultiTaskPlan(message string) *MultiTaskPlan {
 }
 
 func isTrendMessage(message string) bool {
-	lower := strings.ToLower(message)
-	trendKeywords := []string{"趋势", "每月", "按月", "月份", "月度", "折线图", "柱状图", "变化图", "趋势图"}
-	for _, kw := range trendKeywords {
-		if strings.Contains(lower, kw) {
-			return true
-		}
-	}
 	return false
 }
 
@@ -383,17 +375,7 @@ func extractContextWords(query string) []string {
 }
 
 func extractMetricFromQuery(query string) []string {
-	metrics := []string{"销售额", "销量", "订单量", "利润", "成本", "收入", "增长", "趋势", "占比", "排名", "用户数", "访问量", "转化率", "客单价", "复购率"}
-	found := []string{}
-	for _, m := range metrics {
-		if strings.Contains(query, m) {
-			found = append(found, m)
-		}
-	}
-	if len(found) == 0 {
-		return nil
-	}
-	return found
+	return nil
 }
 
 func splitKV(line string) (string, string, bool) {
@@ -538,27 +520,6 @@ func completedCount(plan *MultiTaskPlan) int {
 }
 
 func buildAggregatedInsight(plan *MultiTaskPlan) string {
-	metrics := map[string]string{}
-	for _, t := range plan.SubTasks {
-		if t.Status != "completed" || t.Result == "" {
-			continue
-		}
-		if strings.Contains(t.Label, "订单") || strings.Contains(t.Label, "销售") || strings.Contains(t.Label, "利润") || strings.Contains(t.Label, "成本") {
-			metrics[t.Label] = extractNumberFromResult(t.Result)
-		}
-	}
-	metricKeys := make([]string, 0, len(metrics))
-	for k := range metrics {
-		metricKeys = append(metricKeys, k)
-	}
-	sort.Strings(metricKeys)
-	if len(metricKeys) > 0 {
-		parts := make([]string, 0, len(metricKeys))
-		for _, k := range metricKeys {
-			parts = append(parts, fmt.Sprintf("%s: %s", k, metrics[k]))
-		}
-		return "📊 关键指标汇总：\n" + strings.Join(parts, "；")
-	}
 	return ""
 }
 

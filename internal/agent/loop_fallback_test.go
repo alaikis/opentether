@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFallbackDecisionSanitizesToolCallLeak(t *testing.T) {
 	text := `我可以生成图片。
@@ -12,7 +15,7 @@ func TestFallbackDecisionSanitizesToolCallLeak(t *testing.T) {
 	if decision.FinalAnswer == text {
 		t.Fatal("raw tool call leak was returned")
 	}
-	if contains(decision.FinalAnswer, "script_content") || contains(decision.FinalAnswer, "tool_name") {
+	if strings.Contains(decision.FinalAnswer, "script_content") || strings.Contains(decision.FinalAnswer, "tool_name") {
 		t.Fatalf("fallback leaked tool fields: %s", decision.FinalAnswer)
 	}
 }

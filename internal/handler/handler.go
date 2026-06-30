@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -534,11 +536,25 @@ func (h *Handler) UpdateTableRelations(c *fiber.Ctx) error {
 
 // Skill handlers
 func (h *Handler) ListSkills(c *fiber.Ctx) error {
-	skills, err := h.services.Skill.List()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(skills)
+    page, _ := strconv.Atoi(c.Query("page", "1"))
+    limit, _ := strconv.Atoi(c.Query("limit", "20"))
+    if page < 1 {
+        page = 1
+    }
+    if limit < 1 || limit > 100 {
+        limit = 20
+    }
+    skills, total, err := h.services.Skill.List(page, limit)
+    if err != nil {
+        return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+    }
+    return c.JSON(fiber.Map{
+        "items":    skills,
+        "total":    total,
+        "page":     page,
+        "limit":    limit,
+        "last_page": int(math.Ceil(float64(total) / float64(limit))),
+    })
 }
 
 func (h *Handler) CreateSkill(c *fiber.Ctx) error {

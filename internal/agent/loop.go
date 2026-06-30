@@ -792,8 +792,6 @@ func fallbackDecisionFromText(text string) *LoopDecision {
 		text = "工具调用格式不完整或被截断，系统已拦截原始工具参数输出。请重试，或改为让系统直接生成图表数据。"
 	} else if clarification := EmptyQueryClarification(text); clarification != "" {
 		text = clarification
-	} else if looksLikeUserQuery(text) {
-		text = "抱歉，当前模型暂时无法回答此问题。请检查数据源和 Skill 配置是否正确，或者尝试用更简洁的方式提问。"
 	}
 	return &LoopDecision{
 		Action:      "final_answer",
@@ -868,7 +866,6 @@ func (e *AgentEngine) perceiveAndPlan(ctx context.Context, provider *models.Prov
 
 重要规则:
 - 如果问题包含时间范围(如"一至六月"、"1-6月"、"上半年")，且可能返回大量数据，则 sub_tasks 中列出拆分后的子问题
-- 子问题应该是完整的问题，如 ["林烽1月销售额","林烽2月销售额",...]
 - 如果不需要拆分，sub_tasks 为空数组
 - 如果问题可以直接回答，action 设为 "final_answer" 并填写 final_answer`, query)
 	resp, err := llm.ChatCompletionWithRetry(client, ctx, llm.ChatRequest{
@@ -889,15 +886,15 @@ func (e *AgentEngine) perceiveAndPlan(ctx context.Context, provider *models.Prov
 }
 
 func (e *AgentEngine) ruleBasedPlan(query string) *agentPlan {
-	lower := strings.ToLower(query)
 	intent := "chat"
 	tools := []string{}
 
 	if e != nil && e.db != nil {
 		var rules []models.SkillIntentRule
 		e.db.Where("enabled = ?", true).Order("priority DESC").Find(&rules)
+		lower := strings.ToLower(query)
 		for _, rule := range rules {
-			if rule.Intent != "" && strings.Contains(lower, strings.ToLower(rule.Intent)) {
+			if rule.Intent != "" && containsWord(lower, strings.ToLower(rule.Intent)) {
 				intent = rule.SkillType
 				if rule.SkillType != "" {
 					tools = append(tools, rule.SkillType)
@@ -907,24 +904,15 @@ func (e *AgentEngine) ruleBasedPlan(query string) *agentPlan {
 		}
 	}
 
-	if len(tools) == 0 {
-		keywords := map[string][]string{
-			"text2sql": {"销售", "销售额", "订单", "查询", "查", "数据"},
-			"report":   {"报表", "报告", "统计", "分析"},
-			"pdf":      {"pdf", "导出"},
-		}
-		for tool, kws := range keywords {
-			for _, kw := range kws {
-				if strings.Contains(lower, kw) {
-					intent = tool
-					tools = append(tools, tool)
-					break
-				}
-			}
+	if len(tools) == 0 && e != nil && e.skills != nil {
+		if vecSkill, vecScore, err := e.skills.MatchByVector(query, 0.5); err == nil && vecSkill != nil && vecScore > 0.6 {
+			intent = vecSkill.SkillType
+			tools = append(tools, vecSkill.SkillType)
 		}
 	}
 
 	if len(tools) == 0 {
+		intent = "chat"
 		tools = append(tools, "chat")
 	}
 	return &agentPlan{Action: "tool_call", Intent: intent, Tools: tools, SubTasks: []string{}}
@@ -1007,9 +995,7 @@ func looksLikeToolCallLeak(text string) bool {
 		strings.Contains(lower, "<environment_details>")
 }
 
-func looksLikeUserQuery(text string) bool {
-	return strings.Contains(text, "？") || strings.Contains(text, "多少") || strings.Contains(text, "查询") || strings.Contains(text, "什么") || strings.Contains(text, "分析") || strings.Contains(text, "报告") || strings.Contains(text, "统计") || strings.Contains(text, "排名") || strings.Contains(text, "排行") || strings.Contains(text, "分布") || strings.Contains(text, "趋势") || strings.Contains(text, "对比")
-}
+
 
 type promptBudgetInfo struct {
 	OriginalChars int  `json:"original_chars"`

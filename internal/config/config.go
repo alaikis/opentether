@@ -20,6 +20,12 @@ type Config struct {
 	FeedbackLoop  *FeedbackLoopConfig `yaml:"feedback_loop"`
 	Prompt        *PromptConfig       `yaml:"prompt"`
 	Verification  *VerificationConfig `yaml:"verification"`
+	Agent         *AgentConfig        `yaml:"agent"`
+}
+
+type AgentConfig struct {
+	IntentThresholdHigh float64 `yaml:"intent_threshold_high"`
+	IntentThresholdLow  float64 `yaml:"intent_threshold_low"`
 }
 
 type ServerConfig struct {

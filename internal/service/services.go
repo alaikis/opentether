@@ -825,10 +825,21 @@ func isBuiltinSkill(skill models.Skill) bool {
 	return ok && builtin
 }
 
-func (s *SkillService) List() ([]models.Skill, error) {
-	var skills []models.Skill
-	err := s.db.Where("enabled = ?", true).Order("created_at DESC").Find(&skills).Error
-	return skills, err
+func (s *SkillService) List(page, limit int) ([]models.Skill, int64, error) {
+    var skills []models.Skill
+    var total int64
+    q := s.db.Model(&models.Skill{}).Where("enabled = ?", true)
+    if err := q.Count(&total).Error; err != nil {
+        return nil, 0, err
+    }
+    if page > 0 && limit > 0 {
+        q = q.Offset((page - 1) * limit)
+    }
+    if limit > 0 {
+        q = q.Limit(limit)
+    }
+    err := q.Order("created_at DESC").Find(&skills).Error
+    return skills, total, err
 }
 
 func (s *SkillService) ValidateContextMDFiles() {
@@ -1265,11 +1276,11 @@ func (s *SkillService) Test(id, input string) (map[string]interface{}, error) {
 		score -= 15
 	}
 	if arr, ok := cfg["metric_rules"].([]interface{}); !ok || len(arr) == 0 {
-		issues = append(issues, "缺少 metric_rules：建议配置订单数/销售额等指标规则")
+		issues = append(issues, "缺少 metric_rules：建议配置业务指标规则")
 		score -= 15
 	}
 	if arr, ok := cfg["entity_rules"].([]interface{}); !ok || len(arr) == 0 {
-		issues = append(issues, "缺少 entity_rules：建议配置员工/客户等实体规则")
+		issues = append(issues, "缺少 entity_rules：建议配置业务实体规则")
 		score -= 10
 	}
 	if _, ok := cfg["field_aliases"].(map[string]interface{}); !ok {

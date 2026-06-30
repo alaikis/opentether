@@ -54,6 +54,10 @@ type AgentEngine struct {
 	fastCacheMu     sync.Mutex
 	fastCache       map[string]fastCacheEntry
 	fastInflight    map[string]chan fastCacheEntry
+	fastFeedbackMu  sync.Mutex
+	fastFeedback    map[string]fastPathFeedback
+	userContextCache map[string]userContextCacheEntry
+	userContextTTL   time.Duration
 	runtimeMemMu    sync.Mutex
 	runtimeMemCache map[string]runtimeMemCacheEntry
 	maxParallelism  int
@@ -61,9 +65,22 @@ type AgentEngine struct {
 	llmQualityIssues int
 }
 
+type fastPathFeedback struct {
+	Route         string
+	Success       bool
+	ErrorMessage  string
+	FallbackToLoop bool
+	Timestamp     time.Time
+}
+
 type fastCacheEntry struct {
 	Resp      *ChatResponse
 	Err       error
+	ExpiresAt time.Time
+}
+
+type userContextCacheEntry struct {
+	User      *UserContext
 	ExpiresAt time.Time
 }
 
@@ -212,6 +229,9 @@ func NewAgentEngineWithExternalDBPool(db *gorm.DB, cfg *config.Config, store sto
 		skillPlanner:    NewSkillPlanner(db, NewSkillManager(db)),
 		fastCache:        make(map[string]fastCacheEntry),
 		fastInflight:    make(map[string]chan fastCacheEntry),
+		fastFeedback:    make(map[string]fastPathFeedback),
+		userContextCache: make(map[string]userContextCacheEntry),
+		userContextTTL:   60 * time.Second,
 		runtimeMemCache: make(map[string]runtimeMemCacheEntry),
 		maxParallelism:  5,
 		maxRecursionDepth: 3,
@@ -378,6 +398,18 @@ func (e *AgentEngine) ProcessUserMessage(req *ChatRequest) (*ChatResponse, error
 
 // getUserContext 获取用户上下文信息
 func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
+	if e == nil {
+		return nil, fmt.Errorf("engine is nil")
+	}
+
+	e.fastFeedbackMu.Lock()
+	if entry, ok := e.userContextCache[userID]; ok && time.Now().Before(entry.ExpiresAt) {
+		ctx := entry.User
+		e.fastFeedbackMu.Unlock()
+		return ctx, nil
+	}
+	e.fastFeedbackMu.Unlock()
+
 	var user models.User
 	if err := e.db.Where("id = ?", userID).Preload("Groups").First(&user).Error; err != nil {
 		return nil, err
@@ -392,7 +424,6 @@ func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 		Status:       user.Status,
 	}
 
-	// 获取用户组信息
 	for _, group := range user.Groups {
 		ctx.Groups = append(ctx.Groups, GroupContext{
 			ID:              group.ID,
@@ -402,14 +433,32 @@ func (e *AgentEngine) getUserContext(userID string) (*UserContext, error) {
 		})
 	}
 
-	// 获取用户可用的 Skills
 	var skillAccess []models.SkillAccess
 	e.db.Where("user_id = ?", userID).Or("group_id IN ?", ctx.getGroupIDs()).Find(&skillAccess)
 	for _, s := range skillAccess {
 		ctx.AvailableSkills = append(ctx.AvailableSkills, s.SkillID)
 	}
 
+	e.fastFeedbackMu.Lock()
+	if e.userContextCache == nil {
+		e.userContextCache = make(map[string]userContextCacheEntry)
+	}
+	e.userContextCache[userID] = userContextCacheEntry{User: ctx, ExpiresAt: time.Now().Add(e.userContextTTL)}
+	e.fastFeedbackMu.Unlock()
+
 	return ctx, nil
+}
+
+// InvalidateUserContextCache invalidates cached user context
+func (e *AgentEngine) InvalidateUserContextCache(userID string) {
+	if e == nil {
+		return
+	}
+	e.fastFeedbackMu.Lock()
+	defer e.fastFeedbackMu.Unlock()
+	if e.userContextCache != nil {
+		delete(e.userContextCache, userID)
+	}
 }
 
 // recognizeIntent 意图识别：关键词匹配优先 → 向量语义匹配兜底
@@ -426,26 +475,45 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 	if e.memory != nil && e.memory.longTerm != nil {
 		memories, memErr := e.memory.longTerm.GetUserMemory(user.UserID, "skill_usage")
 		if memErr == nil {
+			now := time.Now()
 			for _, mem := range memories {
 				parts := strings.Split(mem.Key, "_")
 				if len(parts) >= 2 && parts[0] == "skill" {
 					skillType := parts[1]
-					userSkillHistory[skillType] = mem.Priority
+					priority := mem.Priority
+					ageDays := now.Sub(mem.UpdatedAt).Hours() / 24
+					if ageDays > 30 {
+						priority = int(float64(priority) * math.Pow(0.9, ageDays-30))
+						if priority < 0 {
+							priority = 0
+						}
+					}
+					if priority > 0 {
+						userSkillHistory[skillType] = priority
+					}
 				}
 			}
 		}
 	}
 
-	candidates := scoreSkills(message, lowerMsg, skills)
+	parsedKW := map[string][]string{}
+	if e.skills != nil {
+		for _, sk := range skills {
+			if kw := e.skills.GetParsedKeywords(sk.ID); kw != nil {
+				parsedKW[sk.ID] = kw
+			} else {
+				parsedKW[sk.ID] = parseKeywords(sk.Keywords)
+				e.skills.SetParsedKeywords(sk.ID, parsedKW[sk.ID])
+			}
+		}
+	}
+
+	candidates := scoreSkills(message, lowerMsg, skills, parsedKW)
 	for i := range candidates {
 		if boost, ok := userSkillHistory[candidates[i].SkillType]; ok && boost > 0 {
-			weight := 0.05
-			if boost >= 10 {
+			weight := 0.05 * math.Log10(float64(boost)+1)
+			if weight > 0.12 {
 				weight = 0.12
-			} else if boost >= 5 {
-				weight = 0.08
-			} else if boost >= 2 {
-				weight = 0.05
 			}
 			candidates[i].Score += weight
 			if candidates[i].Score > 1.0 {
@@ -458,6 +526,31 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 		return candidates[i].Score > candidates[j].Score
 	})
 
+	if len(candidates) > 0 && candidates[0].Score < 0.7 && e.skills != nil {
+		if vecSkill, vecScore, err := e.skills.MatchByVector(message, 0.5); err == nil && vecSkill != nil && vecScore > 0.0 {
+			found := false
+			for i := range candidates {
+				if candidates[i].SkillID == vecSkill.ID {
+					if vecScore > candidates[i].Score {
+				candidates[i].Score = vecScore
+			}
+					candidates[i].MatchType = "vector+keyword"
+					found = true
+					break
+				}
+			}
+			if !found {
+				candidates = append([]SkillCandidate{{
+					SkillID: vecSkill.ID, SkillName: vecSkill.Name, SkillType: vecSkill.SkillType,
+					Score: vecScore, MatchType: "vector", Description: vecSkill.Description,
+				}}, candidates...)
+			}
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].Score > candidates[j].Score
+			})
+		}
+	}
+
 	if len(candidates) == 0 {
 		return &IntentResult{
 			Intent:     "chat",
@@ -467,8 +560,14 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 	}
 
 	best := candidates[0]
+	thresholdHigh := 0.7
+	thresholdLow := 0.4
+	if e != nil && e.config != nil && e.config.Agent != nil {
+		thresholdHigh = e.config.Agent.IntentThresholdHigh
+		thresholdLow = e.config.Agent.IntentThresholdLow
+	}
 
-	if best.Score >= 0.7 {
+	if best.Score >= thresholdHigh {
 		return &IntentResult{
 			Intent:     best.SkillType,
 			Confidence: best.Score,
@@ -476,7 +575,7 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 		}, nil
 	}
 
-	if best.Score >= 0.4 && (len(candidates) < 2 || best.Score-candidates[1].Score > 0.25) {
+	if best.Score >= thresholdLow && (len(candidates) < 2 || best.Score-candidates[1].Score > 0.25) {
 		return &IntentResult{
 			Intent:     best.SkillType,
 			Confidence: best.Score,
@@ -558,41 +657,44 @@ type SkillCandidate struct {
 }
 
 // scoreSkills 对所有启用的 Skill 匹配打分，返回按分数降序的候选列表
-func scoreSkills(message, lowerMsg string, skills []models.Skill) []SkillCandidate {
+func scoreSkills(message, lowerMsg string, skills []models.Skill, parsedKeywords map[string][]string) []SkillCandidate {
 	type resultItem struct {
 		SkillCandidate
 	}
 	var list []resultItem
 
 	for _, sk := range skills {
-		keywords := parseKeywords(sk.Keywords)
+		keywords, ok := parsedKeywords[sk.ID]
+		if !ok {
+			keywords = parseKeywords(sk.Keywords)
+		}
 		score := 0.0
 		matchType := ""
 		totalKW := len(keywords)
 
-		// 关键词完全匹配（query contains keyword）: +1.0 each
+		if totalKW == 0 {
+			totalKW = 1
+		}
+
 		for _, kw := range keywords {
-			if kw != "" && contains(lowerMsg, toLower(kw)) {
+			if kw != "" && containsWord(lowerMsg, toLower(kw)) {
 				score += 1.0
 				matchType = "keyword"
 			}
 		}
 
-		// Skill 名称匹配: +0.8
-		if contains(lowerMsg, toLower(sk.Name)) {
+		if containsWord(lowerMsg, toLower(sk.Name)) {
 			score += 0.8
 			matchType = "keyword"
 		}
 
-		// Skill 类型匹配: +0.6
-		if contains(lowerMsg, toLower(sk.SkillType)) {
+		if containsWord(lowerMsg, toLower(sk.SkillType)) {
 			score += 0.6
 			matchType = "keyword"
 		}
 
-		// 归一化：使用 sqrt 减少对关键词少的 skill 的 bias
 		if score > 0 {
-			normalized := score / math.Sqrt(float64(totalKW)+1)
+			normalized := score / math.Sqrt(float64(totalKW))
 			if normalized > 1.0 {
 				normalized = 1.0
 			}
@@ -604,10 +706,8 @@ func scoreSkills(message, lowerMsg string, skills []models.Skill) []SkillCandida
 		}
 	}
 
-	// 按分数降序
 	sort.Slice(list, func(i, j int) bool { return list[i].Score > list[j].Score })
 
-	// 最多返回 3 个候选
 	maxResults := 3
 	if len(list) < maxResults {
 		maxResults = len(list)
@@ -617,6 +717,49 @@ func scoreSkills(message, lowerMsg string, skills []models.Skill) []SkillCandida
 		result = append(result, list[i].SkillCandidate)
 	}
 	return result
+}
+
+func (m *SkillManager) GetParsedKeywords(skillID string) []string {
+	if m == nil {
+		return nil
+	}
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if m.parsedKeywords == nil {
+		m.parsedKeywords = make(map[string][]string)
+	}
+	if kw, ok := m.parsedKeywords[skillID]; ok {
+		return kw
+	}
+	return nil
+}
+
+func (m *SkillManager) SetParsedKeywords(skillID string, keywords []string) {
+	if m == nil {
+		return
+	}
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if m.parsedKeywords == nil {
+		m.parsedKeywords = make(map[string][]string)
+	}
+	m.parsedKeywords[skillID] = keywords
+}
+
+func (m *SkillManager) PreParseKeywords(skills []models.Skill) {
+	if m == nil {
+		return
+	}
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if m.parsedKeywords == nil {
+		m.parsedKeywords = make(map[string][]string)
+	}
+	for _, sk := range skills {
+		if _, ok := m.parsedKeywords[sk.ID]; !ok {
+			m.parsedKeywords[sk.ID] = parseKeywords(sk.Keywords)
+		}
+	}
 }
 
 // planExecution 规划执行
@@ -667,54 +810,40 @@ func (e *AgentEngine) planExecution(intent *IntentResult, user *UserContext) (*P
 	return plan, nil
 }
 
-var hardcodedSkillMap = map[string]string{
-	"text2sql":     "skill_text2sql",
-	"chat":         "skill_chat",
-	"file_process": "skill_file_process",
-	"report":       "skill_report",
-	"api_caller":   "skill_api_caller",
-	"employee":     "skill_employee",
-	"pdf":          "skill_pdf",
-	"md2pdf":       "skill_md2pdf",
-	"excel":        "skill_report",
-	"word":         "skill_report",
-	"ppt":          "skill_report",
-}
-
 func (e *AgentEngine) resolveSkillFromIntent(intent string) string {
 	if e == nil || e.db == nil {
-		return hardcodedSkillMap[intent]
+		return ""
 	}
 	var rule models.SkillIntentRule
 	if err := e.db.Where("intent = ? AND enabled = ?", intent, true).Order("priority DESC").First(&rule).Error; err == nil {
 		return rule.SkillType
 	}
-	return hardcodedSkillMap[intent]
+	return ""
 }
 
 // checkPermission 检查权限边界
 func (e *AgentEngine) checkPermission(user *UserContext, skillName string) (bool, string) {
-	// 检查用户是否激活
 	if user.Status != "active" {
 		return false, "用户账户未激活"
 	}
 
-	// 管理员角色直接放行
-	if user.Role == "admin" {
-		return true, ""
-	}
-
-	// 检查 Skill 是否在允许列表中
 	for _, skill := range user.AvailableSkills {
 		if skill == skillName {
 			return true, ""
 		}
 	}
 
-	// 允许管理员使用所有技能
-	for _, group := range user.Groups {
-		if group.Code == "admin" || group.Code == "Administrators" {
-			return true, ""
+	if e != nil && e.db != nil {
+		var skill models.Skill
+		if err := e.db.Where("name = ? AND enabled = ?", skillName, true).First(&skill).Error; err == nil {
+			allowedGroups := stringSliceFromConfig(skill.AllowedGroups)
+			for _, group := range user.Groups {
+				for _, allowed := range allowedGroups {
+					if strings.EqualFold(group.Code, allowed) || strings.EqualFold(group.Name, allowed) {
+						return true, ""
+					}
+				}
+			}
 		}
 	}
 
@@ -728,62 +857,24 @@ func (e *AgentEngine) executePlan(plan *PlanningResult, req *ChatRequest, user *
 		SkillUsed:      plan.SkillName,
 	}
 
-	switch plan.SkillName {
-	case "skill_text2sql":
-		result, err := e.executeText2SQL(req.Message, user)
+	dispatchers := map[string]func(string, *UserContext) (*ChatResponse, error){
+		"skill_text2sql": e.executeText2SQL,
+		"skill_employee": e.executeEmployee,
+		"skill_chat":     e.executeChat,
+		"skill_report":   e.executeReport,
+		"skill_pdf":      e.executePDFReport,
+		"skill_md2pdf":   e.executeMD2PDF,
+	}
+
+	if fn, ok := dispatchers[plan.SkillName]; ok {
+		result, err := fn(req.Message, user)
 		if err != nil {
-			response.Message = fmt.Sprintf("SQL查询失败: %v", err)
+			response.Message = err.Error()
 		} else {
 			response.Message = result.Message
 			response.Data = result.Data
 		}
-
-	case "skill_employee":
-		result, err := e.executeEmployee(req.Message, user)
-		if err != nil {
-			response.Message = fmt.Sprintf("员工查询失败: %v", err)
-		} else {
-			response.Message = result.Message
-			response.Data = result.Data
-		}
-
-	case "skill_chat":
-		result, err := e.executeChat(req.Message, user)
-		if err != nil {
-			response.Message = fmt.Sprintf("对话处理失败: %v", err)
-		} else {
-			response.Message = result.Message
-		}
-
-	case "skill_report":
-		result, err := e.executeReport(req.Message, user)
-		if err != nil {
-			response.Message = fmt.Sprintf("报告生成失败: %v", err)
-		} else {
-			response.Message = result.Message
-			response.Data = result.Data
-		}
-
-	case "skill_pdf":
-		result, err := e.executePDFReport(req.Message, user)
-		if err != nil {
-			response.Message = fmt.Sprintf("PDF生成失败: %v", err)
-		} else {
-			response.Message = result.Message
-			response.Data = result.Data
-		}
-
-	case "skill_md2pdf":
-		result, err := e.executeMD2PDF(req.Message, user)
-		if err != nil {
-			response.Message = fmt.Sprintf("Markdown转PDF失败: %v", err)
-		} else {
-			response.Message = result.Message
-			response.Data = result.Data
-		}
-
-	default:
-		// 默认 chat
+	} else {
 		result, _ := e.executeChat(req.Message, user)
 		response.Message = result.Message
 	}
@@ -1141,7 +1232,7 @@ func formatQueryResult(result *text2sql.QueryResult) string {
 
 func isTrendQuery(headers []string) bool {
 	for _, h := range headers {
-		if strings.EqualFold(h, "month") || strings.EqualFold(h, "月份") || strings.EqualFold(h, "月份") {
+		if strings.EqualFold(h, "month") {
 			return true
 		}
 	}
@@ -1180,7 +1271,7 @@ func formatTrendResult(headers []string, rows [][]interface{}) string {
 			values = append(values, v)
 		}
 		if valid {
-			label := humanMetricLabel(h)
+			label := h
 			series[label] = values
 			seriesOrder = append(seriesOrder, label)
 		}
@@ -1234,35 +1325,14 @@ func buildChartPayload(headers []string, rows [][]interface{}, fallback string) 
 			values = append(values, v)
 		}
 		if valid {
-			name := humanMetricLabel(h)
-			unit := "元"
-			if name == "订单数" {
-				unit = "单"
-			}
-			series = append(series, map[string]interface{}{"name": name, "values": values, "unit": unit})
+			name := h
+			series = append(series, map[string]interface{}{"name": name, "values": values})
 		}
 	}
 	if len(series) == 0 {
 		return nil
 	}
 	return map[string]interface{}{"type": "chart", "chart_type": "bar", "labels": labels, "series": series, "fallback_text": fallback}
-}
-
-func humanMetricLabel(header string) string {
-	lower := strings.ToLower(header)
-	if strings.Contains(lower, "count") || strings.Contains(header, "单") {
-		return "订单数"
-	}
-	if strings.Contains(lower, "profit") || strings.Contains(header, "利润") {
-		return "利润"
-	}
-	if strings.Contains(lower, "cost") || strings.Contains(header, "成本") {
-		return "成本"
-	}
-	if strings.Contains(lower, "sales") || strings.Contains(lower, "amount") || strings.Contains(header, "销售") || strings.Contains(header, "金额") {
-		return "销售额"
-	}
-	return header
 }
 
 func toFloat64(value interface{}) (float64, error) {
@@ -1523,7 +1593,7 @@ func formatEmployeeResult(result *text2sql.QueryResult) string {
 	nameColIdx := -1
 	for i, col := range result.Columns {
 		lowerCol := strings.ToLower(col)
-		if strings.Contains(lowerCol, "name") || strings.Contains(lowerCol, "姓名") || strings.Contains(lowerCol, "员工") {
+		if strings.Contains(lowerCol, "name") {
 			nameColIdx = i
 			break
 		}
@@ -1658,8 +1728,8 @@ func (e *AgentEngine) executePDFReport(message string, user *UserContext) (*Chat
 	// 构建查询 - 尝试从 message 中提取查询意图
 	queryMessage := message
 	// 如果用户没有明确指定查询，构建一个默认查询
-	if !contains(toLower(message), "查询") && !contains(toLower(message), "select") {
-		queryMessage = message + " 相关数据"
+	if !strings.Contains(toLower(message), "select") {
+		queryMessage = message
 	}
 
 	req := &text2sql.QueryRequest{
@@ -1809,14 +1879,26 @@ func toLower(s string) string {
 	return string(result)
 }
 
-func contains(s, substr string) bool {
-	if len(s) < len(substr) {
+func containsWord(s, substr string) bool {
+	if substr == "" || len(s) < len(substr) {
 		return false
 	}
-	if s[:len(substr)] == substr {
-		return true
+	lower := strings.ToLower(s)
+	target := strings.ToLower(substr)
+	for i := 0; i <= len(lower)-len(target); i++ {
+		if lower[i:i+len(target)] == target {
+			leftOk := i == 0 || !isWordChar(lower[i-1])
+			rightOk := i+len(target) >= len(lower) || !isWordChar(lower[i+len(target)])
+			if leftOk && rightOk {
+				return true
+			}
+		}
 	}
-	return contains(s[1:], substr)
+	return false
+}
+
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 func extractEntities(message string) map[string]string {
@@ -1930,6 +2012,10 @@ type SkillManager struct {
 	store      vectorstore.Store
 	cacheMu    sync.Mutex
 	matchCache map[string]skillMatchCacheEntry
+	skillsCache     []models.Skill
+	skillsCacheAt   time.Time
+	skillsCacheTTL  time.Duration
+	parsedKeywords  map[string][]string
 }
 
 type skillMatchCacheEntry struct {
@@ -1939,7 +2025,7 @@ type skillMatchCacheEntry struct {
 }
 
 func NewSkillManager(db *gorm.DB) *SkillManager {
-	sm := &SkillManager{db: db, matchCache: make(map[string]skillMatchCacheEntry)}
+	sm := &SkillManager{db: db, matchCache: make(map[string]skillMatchCacheEntry), parsedKeywords: make(map[string][]string)}
 	// 延迟初始化，由外部调用 InitVector
 	return sm
 }
@@ -1996,11 +2082,39 @@ func (m *SkillManager) GetSkill(name string) (*models.Skill, error) {
 
 // ListEnabledSkills 获取所有启用的 Skill
 func (m *SkillManager) ListEnabledSkills() ([]models.Skill, error) {
+	m.cacheMu.Lock()
+	if len(m.skillsCache) > 0 && time.Since(m.skillsCacheAt) < m.skillsCacheTTL {
+		skills := m.skillsCache
+		m.cacheMu.Unlock()
+		return skills, nil
+	}
+	m.cacheMu.Unlock()
+
 	var skills []models.Skill
 	err := m.db.Where("enabled = ?", true).
 		Order("CASE WHEN category = '系统内置' THEN 1 ELSE 0 END, created_at DESC").
 		Find(&skills).Error
-	return skills, err
+	if err != nil {
+		return nil, err
+	}
+
+	m.cacheMu.Lock()
+	m.skillsCache = skills
+	m.skillsCacheAt = time.Now()
+	m.parsedKeywords = nil
+	if m.skillsCacheTTL == 0 {
+		m.skillsCacheTTL = 30 * time.Second
+	}
+	m.cacheMu.Unlock()
+
+	return skills, nil
+}
+
+// InvalidateSkillsCache forces a reload of skills from DB
+func (m *SkillManager) InvalidateSkillsCache() {
+	m.cacheMu.Lock()
+	m.skillsCache = nil
+	m.cacheMu.Unlock()
 }
 
 // SyncVector 同步所有 Skill 的向量索引（全量重建）
@@ -2232,7 +2346,7 @@ func (e *AgentEngine) fallbackOnLLMDegradation(user *UserContext, query, convers
 			}
 		}
 	}
-	if strings.Contains(strings.ToLower(query), "查询") || strings.Contains(strings.ToLower(query), "数据") {
+	if strings.Contains(strings.ToLower(query), "query") || strings.Contains(strings.ToLower(query), "data") {
 		if resp, ok := e.executeSelectedSkillDirect(context.Background(), user, "skill_text2sql", query, conversationID, time.Now()); ok {
 			return resp
 		}

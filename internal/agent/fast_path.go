@@ -17,7 +17,7 @@ import (
 const defaultFastRouterJinja = `你是轻量路由模型。判断用户问题是否可走快路径。
 只返回 JSON，不要解释。route 只能是 fast_chat、fast_text2sql、agent_loop。
 - fast_chat: 简单知识/解释/闲聊，不需要工具。
-- fast_text2sql: 简单数据查询，尤其是订单数、销售额、员工维度统计。
+- fast_text2sql: 简单数据查询，尤其是数值统计和维度分析。
 - agent_loop: 多步骤、文件、报表、MCP、写操作、复杂分析。
 
 用户问题：{{ message }}
@@ -152,6 +152,8 @@ func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, messag
 		if resp, ok := e.tryText2SQLRangeFastPath(ctx, user, message, tr, conversationID); ok {
 			resp = annotate(resp, "range")
 			e.setFastPathCache(cacheKey, resp, 120*time.Second)
+		e.recordFastPathFeedback(message, "fast_text2sql_range", true, "")
+		e.learnFromFastPathResult(message, "fast_text2sql_range", true)
 			return resp, true, nil
 		}
 	}
@@ -169,19 +171,30 @@ func (e *AgentEngine) TryFastPath(ctx context.Context, user *UserContext, messag
 		if resp, ok := e.tryText2SQLApprovedTemplateFastPath(ctx, user, message, conversationID); ok {
 			resp = annotate(resp, "approved_template")
 			e.setFastPathCache(cacheKey, resp, 120*time.Second)
+			e.recordFastPathFeedback(message, "fast_text2sql", true, "")
+			e.learnFromFastPathResult(message, "fast_text2sql", true)
 			return resp, true, nil
 		}
 		if resp, ok := e.tryText2SQLTemplateFastPath(ctx, user, message, conversationID); ok {
 			resp = annotate(resp, "text2sql")
 			e.setFastPathCache(cacheKey, resp, 120*time.Second)
+			e.recordFastPathFeedback(message, "fast_text2sql", true, "")
+			e.learnFromFastPathResult(message, "fast_text2sql", true)
 			return resp, true, nil
 		}
 	}
 	if route.Route == "fast_chat" || (route.Route == "" && isSimpleChat(message)) {
 		resp, err := e.executeFastChat(ctx, user, message, conversationID)
 		if err == nil && resp != nil {
-			return annotate(resp, "chat"), true, nil
+		resp = annotate(resp, "chat")
+		e.recordFastPathFeedback(message, "fast_chat", true, "")
+		e.learnFromFastPathResult(message, "fast_chat", true)
+			return resp, true, nil
 		}
+	}
+	e.recordFastPathFeedback(message, route.Route, false, "execution_failed")
+	if route.Route != "" {
+		e.learnFromFastPathResult(message, route.Route, false)
 	}
 	return nil, false, nil
 }
@@ -389,7 +402,7 @@ func missingTemplateVariables(tpl, message string) []string {
 			missing = append(missing, "时间范围")
 		}
 	}
-	for _, pair := range []struct{ raw, label string }{{"employee_name", "员工/人员"}, {"country", "国家"}, {"buyer", "买家"}, {"mpn", "MPN"}, {"sku", "SKU"}, {"title_regex", "产品标题"}} {
+	for _, pair := range []struct{ raw, label string }{{"entity_name", "entity"}, {"country", "country"}, {"buyer", "buyer"}, {"mpn", "MPN"}, {"sku", "SKU"}, {"title", "title"}} {
 		if (strings.Contains(tpl, "{{"+pair.raw+"}}") || strings.Contains(tpl, "{{ "+pair.raw+" }}")) && strings.TrimSpace(vars[pair.raw]) == "" {
 			missing = append(missing, pair.label)
 		}
@@ -426,16 +439,16 @@ func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool)
 func extractTemplateVariables(message string) map[string]string {
 	vars := map[string]string{}
 	if m := regexp.MustCompile(`^\s*([\p{Han}]{2,4}?)(?:\d|一月|二月|三月|四月|五月|六月|七月|八月|九月|十月|十一月|十二月|本月|上月|最近|今年|去年)`).FindStringSubmatch(message); len(m) > 1 {
-		vars["employee_name"] = m[1]
+		vars["entity_name"] = m[1]
 	} else if m := regexp.MustCompile(`^\s*([\p{Han}]{2,4})`).FindStringSubmatch(message); len(m) > 1 {
-		vars["employee_name"] = m[1]
+		vars["entity_name"] = m[1]
 	}
 	patterns := map[string]string{
-		"country":     `国家[:：\s]+([^，,；;\s]+)`,
-		"buyer":       `买家[:：\s]+([^，,；;\s]+)`,
-		"mpn":         `(?i)mpn[:：\s]+([^，,；;\s]+)`,
-		"sku":         `(?i)sku[:：\s]+([^，,；;\s]+)`,
-		"title_regex": `标题(?:正则)?[:：\s]+([^，,；;]+)`,
+		"country": `country[:：\s]+([^，,；;\s]+)`,
+		"buyer":   `buyer[:：\s]+([^，,；;\s]+)`,
+		"mpn":     `(?i)mpn[:：\s]+([^，,；;\s]+)`,
+		"sku":     `(?i)sku[:：\s]+([^，,；;\s]+)`,
+		"title":   `title[:：\s]+([^，,；;]+)`,
 	}
 	for key, pattern := range patterns {
 		if m := regexp.MustCompile(pattern).FindStringSubmatch(message); len(m) > 1 {
@@ -495,7 +508,7 @@ func (e *AgentEngine) tryText2SQLRangeFastPath(ctx context.Context, user *UserCo
 		return nil, false
 	}
 	// 把时间和原始问题一起传给 text2sql，让 LLM 理解
-	question := fmt.Sprintf("查询%s到%s期间的数据。原始问题: %s",
+	question := fmt.Sprintf("Query data from %s to %s. Original question: %s",
 		tr.Start.Format("2006-01-02"),
 		tr.End.Format("2006-01-02"),
 		message)
@@ -543,4 +556,62 @@ func shouldSkipFastPath(message string) bool {
 		}
 	}
 	return false
+}
+
+func (e *AgentEngine) recordFastPathFeedback(message, route string, success bool, errorMsg string) {
+	if e == nil || route == "" {
+		return
+	}
+	e.fastFeedbackMu.Lock()
+	if e.fastFeedback == nil {
+		e.fastFeedback = map[string]fastPathFeedback{}
+	}
+	e.fastFeedback[message] = fastPathFeedback{
+		Route: route, Success: success, ErrorMessage: errorMsg, Timestamp: time.Now(),
+	}
+	e.fastFeedbackMu.Unlock()
+}
+
+func (e *AgentEngine) learnFromFastPathResult(message, route string, success bool) {
+	if e == nil || e.db == nil || message == "" || route == "" {
+		return
+	}
+	confidence := 0.7
+	if success {
+		var existing models.RouteExample
+		if err := e.db.Where("text = ? AND route = ?", message, route).First(&existing).Error; err == nil {
+			existing.UseCount++
+			if existing.Confidence < 0.95 {
+				existing.Confidence += 0.03
+				if existing.Confidence > 0.95 {
+					existing.Confidence = 0.95
+				}
+			}
+			if existing.Status == "pending" && existing.UseCount >= 5 {
+				existing.Status = "active"
+			}
+			_ = e.db.Save(&existing).Error
+			return
+		}
+		_ = e.db.Create(&models.RouteExample{
+			Text: message, Route: route, Source: "runtime",
+			Status: "pending", Confidence: confidence, UseCount: 1,
+		}).Error
+	} else {
+		var existing models.RouteExample
+		if err := e.db.Where("text = ? AND route = ?", message, route).First(&existing).Error; err == nil {
+			existing.Confidence -= 0.1
+			existing.UseCount++
+			if existing.Confidence < 0.2 {
+				existing.Status = "rejected"
+				existing.Confidence = 0.0
+			}
+			_ = e.db.Save(&existing).Error
+		} else {
+			_ = e.db.Create(&models.RouteExample{
+				Text: message, Route: route, Source: "runtime",
+				Status: "rejected", Confidence: 0.2, UseCount: 1,
+			}).Error
+		}
+	}
 }

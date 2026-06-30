@@ -75,7 +75,7 @@ func TestTraceLinFengQuery(t *testing.T) {
 	lowerMsg := strings.ToLower(q)
 	var allSkills []models.Skill
 	db.Where("enabled = 1").Find(&allSkills)
-	candidates := scoreSkills(q, lowerMsg, allSkills)
+	candidates := scoreSkills(q, lowerMsg, allSkills, nil)
 	for i, c := range candidates {
 		fmt.Printf("  %d. %s (%s) score=%.2f\n", i+1, c.SkillName, c.SkillType, c.Score)
 	}
