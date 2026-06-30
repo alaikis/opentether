@@ -1,0 +1,18 @@
+=== Enabled Skills ===
+Total: 2
+
+Name: 员工订单数据查询
+Type: text2sql
+Category: nw-mysql-业务
+Desc: 管理层经营分析 Skill：覆盖销售、利润、成本、库存、采购、客户、产品、国家、仓库、售后、广告等经营主题。
+Keywords: ["订单","出货","业绩","销售额","国家","买家","产品","分类","类型","mpn","sku","标题","林烽"]
+
+Name: 经营分析
+Type: text2sql
+Category: bi
+Desc: 全方位经营分析 Skill：覆盖销售、利润、客户、产品、库存、采购六大维度，自动发现亮点、雷区，给出优化建议。
+Keywords: ["经营分析","经营报告","销售分析","利润分析","客户分析","产品分析","库存分析","采购分析","经营诊断","管理报告","经营决策","财务分析","业务分析"]
+
+=== Data Sources ===
+Total: 1
+ID=1cce62ad-7c32-4179-8b2b-581f0edd1e87, Name=nw-mysql, Type=mysql, Host=192.168.110.127, Port=3306, DB=boss, Enabled=1

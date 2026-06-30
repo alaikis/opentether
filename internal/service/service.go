@@ -1,9 +1,6 @@
 package service
 
 import (
-	"time"
-
-	"github.com/alaikis/opentether/internal/agent"
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/storage"
 	"gorm.io/gorm"
@@ -37,12 +34,23 @@ type Services struct {
 	AgentTasks    *AgentTaskService         // 长任务图
 	Webhook       *WebhookService           // Webhook 通知
 	RAG           *RAGService               // RAG 检索增强
+	Enterprise    *EnterpriseService        // 企业级设置/审批/备份
 	// === 报表引擎 ===
 	ReportEngine   *ReportEngineService   // 完整报表引擎
 	ChartRenderer  *ChartRendererService  // 图表渲染
 	ReportDelivery *ReportDeliveryService // 报表投递
 	// === 配置自动建议 ===
 	ConfigSuggest *ConfigSuggestService // 配置自动建议生成器
+	// === 可观测性 ===
+	Observability *ObservabilityService // 指标和告警
+	// === MCP 生态 ===
+	MCPRegistry *MCPRegistryService // MCP 服务器注册与发现
+	// === 分布式 Hub ===
+	Distributed *DistributedService // 分布式任务协调
+	// === 自动调优 ===
+	Tuning *TuningService // 自动超参数调优
+	// === 审计日志 ===
+	Audit *AuditLogService // 全链路审计日志
 }
 
 func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Services {
@@ -56,15 +64,12 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 	})
 	go mcp.StartEnabledServers()
 	go skillSvc.ValidateContextMDFiles()
-	go func() {
-		agent.RecoverRuntimeJobs(db)
-		time.Sleep(2 * time.Second)
-		agentSvc.AutoRecoverRuntimeJobs(10)
-	}()
+	skillSvc.StartSkillOptimizer()
 	platformCore := NewPlatformCoreService(db)
 	platformCore.SetAgentService(agentSvc)
 	agentTasks := NewAgentTaskService(db)
 	agentTasks.SetAgentService(agentSvc)
+	_ = SeedInitialData(db)
 
 	return &Services{
 		Auth:         NewAuthService(db, cfg),
@@ -94,12 +99,23 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 		AgentTasks:    agentTasks,
 		Webhook:       NewWebhookService(db),
 		RAG:           NewRAGService(db),
+		Enterprise:    NewEnterpriseService(db),
 		// 报表引擎
 		ReportEngine:   NewReportEngineService(db, store),
 		ChartRenderer:  NewChartRendererService(),
 		ReportDelivery: NewReportDeliveryService(cfg, store),
 		// 配置建议
 		ConfigSuggest: NewConfigSuggestService(db, cfg, store),
+		// 可观测性
+		Observability: NewObservabilityService(db),
+		// MCP 注册
+		MCPRegistry: NewMCPRegistryService(db),
+		// 分布式
+		Distributed: NewDistributedService(db),
+		// 自动调优
+		Tuning: NewTuningService(db),
+		// 审计日志
+		Audit: NewAuditLogService(db, store),
 	}
 }
 
@@ -156,6 +172,7 @@ type CreateProviderInput struct {
 	Model        string `json:"model"`
 	Enabled      bool   `json:"enabled"`
 	Priority     int    `json:"priority"`
+	IsSmallModel bool   `json:"is_small_model"`
 	Config       string `json:"config"`
 }
 
@@ -166,6 +183,7 @@ type UpdateProviderInput struct {
 	Model        string `json:"model"`
 	Enabled      bool   `json:"enabled"`
 	Priority     int    `json:"priority"`
+	IsSmallModel bool   `json:"is_small_model"`
 	Config       string `json:"config"`
 }
 

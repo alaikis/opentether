@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -195,6 +196,9 @@ type fastPathRoute struct {
 func (e *AgentEngine) routeFastPath(message string) fastPathRoute {
 	prediction := e.routeByEmbeddedClassifier(message)
 	if prediction.Route == "" {
+		if route := e.routeByTemplateIntent(message); route.Route != "" {
+			return route
+		}
 		return fastPathRoute{}
 	}
 	return fastPathRoute{Route: prediction.Route, Intent: prediction.Intent, Confidence: prediction.Confidence, Reason: "内置 TF-IDF FastPathClassifier 命中: " + prediction.MatchedText}
@@ -291,52 +295,106 @@ func (e *AgentEngine) tryText2SQLApprovedTemplateFastPath(ctx context.Context, u
 	if err := q.Find(&mems).Error; err != nil || len(mems) == 0 {
 		return nil, false
 	}
+	type candidate struct {
+		sql    string
+		intent string
+		score  int
+	}
+	candidates := make([]candidate, 0, len(mems))
+	missingParams := map[string]bool{}
 	for _, mem := range mems {
 		var tpl struct {
 			SQLTemplate string `json:"SQLTemplate"`
 			Intent      string `json:"intent"`
 		}
-		if json.Unmarshal([]byte(mem.Content), &tpl) != nil || tpl.SQLTemplate == "" {
+		if json.Unmarshal([]byte(mem.Content), &tpl) != nil || strings.TrimSpace(tpl.SQLTemplate) == "" || strings.TrimSpace(tpl.Intent) == "" {
 			continue
 		}
-		if !templateMatchesIntent(message, tpl.Intent) {
+		if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(tpl.SQLTemplate)), "SELECT") {
+			continue
+		}
+		score := templateIntentScore(message, tpl.Intent)
+		if score < 2 {
 			continue
 		}
 		renderedSQL, ok := renderSQLTemplate(tpl.SQLTemplate, message, time.Now())
 		if !ok {
+			for _, p := range missingTemplateVariables(tpl.SQLTemplate, message) {
+				missingParams[p] = true
+			}
 			continue
 		}
-		if resp, ok := e.executeRenderedSQLTemplate(ctx, user, message, renderedSQL, dataSourceID, conversationID); ok {
+		candidates = append(candidates, candidate{sql: renderedSQL, intent: tpl.Intent, score: score})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	for _, c := range candidates {
+		if resp, ok := e.executeRenderedSQLTemplate(ctx, user, message, c.sql, dataSourceID, conversationID); ok {
+			if resp.Data == nil {
+				resp.Data = map[string]interface{}{}
+			}
+			resp.Data["template_intent"] = c.intent
+			resp.Data["template_score"] = c.score
 			return resp, true
 		}
+	}
+	if len(missingParams) > 0 {
+		params := make([]string, 0, len(missingParams))
+		for p := range missingParams {
+			params = append(params, p)
+		}
+		return &ChatResponse{Message: "还缺少查询参数：" + strings.Join(params, "、") + "。请补充后我继续查询。", ConversationID: conversationID, SkillUsed: "query_clarification", Data: map[string]interface{}{"needs_clarification": true, "missing_params": params}}, true
 	}
 	return nil, false
 }
 
 func templateMatchesIntent(message, intent string) bool {
+	return templateIntentScore(message, intent) >= 2
+}
+
+func templateIntentScore(message, intent string) int {
 	if strings.TrimSpace(intent) == "" {
-		return true
+		return 0
 	}
 	lower := strings.ToLower(message)
+	best := 0
 	for _, token := range strings.Split(intent, ",") {
 		token = strings.TrimSpace(strings.ToLower(token))
 		if token == "" {
 			continue
 		}
+		score := 0
 		if strings.Contains(lower, token) {
-			return true
+			score += 5
 		}
 		if len([]rune(token)) >= 2 {
 			runes := []rune(token)
 			for i := 0; i <= len(runes)-2; i++ {
-				sub := string(runes[i : i+2])
-				if strings.Contains(lower, sub) {
-					return true
+				if strings.Contains(lower, string(runes[i:i+2])) {
+					score++
 				}
 			}
 		}
+		if score > best {
+			best = score
+		}
 	}
-	return false
+	return best
+}
+
+func missingTemplateVariables(tpl, message string) []string {
+	vars := extractTemplateVariables(message)
+	missing := []string{}
+	if strings.Contains(tpl, "{{start_date}}") || strings.Contains(tpl, "{{ start_date }}") || strings.Contains(tpl, "{{end_date}}") || strings.Contains(tpl, "{{ end_date }}") {
+		if _, ok := parseExtendedTimeRange(message); !ok {
+			missing = append(missing, "时间范围")
+		}
+	}
+	for _, pair := range []struct{ raw, label string }{{"employee_name", "员工/人员"}, {"country", "国家"}, {"buyer", "买家"}, {"mpn", "MPN"}, {"sku", "SKU"}, {"title_regex", "产品标题"}} {
+		if (strings.Contains(tpl, "{{"+pair.raw+"}}") || strings.Contains(tpl, "{{ "+pair.raw+" }}")) && strings.TrimSpace(vars[pair.raw]) == "" {
+			missing = append(missing, pair.label)
+		}
+	}
+	return missing
 }
 
 func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool) {
@@ -367,7 +425,9 @@ func renderSQLTemplate(tpl string, message string, now time.Time) (string, bool)
 
 func extractTemplateVariables(message string) map[string]string {
 	vars := map[string]string{}
-	if m := regexp.MustCompile(`^\s*([\p{Han}]{2,4})`).FindStringSubmatch(message); len(m) > 1 {
+	if m := regexp.MustCompile(`^\s*([\p{Han}]{2,4}?)(?:\d|一月|二月|三月|四月|五月|六月|七月|八月|九月|十月|十一月|十二月|本月|上月|最近|今年|去年)`).FindStringSubmatch(message); len(m) > 1 {
+		vars["employee_name"] = m[1]
+	} else if m := regexp.MustCompile(`^\s*([\p{Han}]{2,4})`).FindStringSubmatch(message); len(m) > 1 {
 		vars["employee_name"] = m[1]
 	}
 	patterns := map[string]string{

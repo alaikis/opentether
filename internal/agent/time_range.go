@@ -73,6 +73,11 @@ func parseExtendedTimeRange(message string) (timeRangeSpec, bool) {
 		}
 	}
 
+	if month := parseChineseMonthName(lower); month >= 1 && month <= 12 {
+		start := time.Date(y, time.Month(month), 1, 0, 0, 0, 0, loc)
+		return timeRangeSpec{Label: fmt.Sprintf("%d月", month), Start: start, End: start.AddDate(0, 1, 0), IsRange: true}, true
+	}
+
 	// ----- "N月-M月" / "N-M月" -----
 	reRange := regexp.MustCompile(`(\d{1,2})\s*月?\s*[-~至到]\s*(\d{1,2})\s*月`)
 	if m := reRange.FindStringSubmatch(message); len(m) == 3 {
@@ -118,6 +123,16 @@ func parseExtendedTimeRange(message string) (timeRangeSpec, bool) {
 
 // findMatchingMetrics 从语义模型的已配置指标中查找用户问题命中的指标。
 // 不做任何业务领域假设——所有指标都来自管理员在语义模型中配置的定义。
+func parseChineseMonthName(text string) int {
+	months := map[string]int{"一月": 1, "二月": 2, "三月": 3, "四月": 4, "五月": 5, "六月": 6, "七月": 7, "八月": 8, "九月": 9, "十月": 10, "十一月": 11, "十二月": 12}
+	for k, v := range months {
+		if strings.Contains(text, k) {
+			return v
+		}
+	}
+	return 0
+}
+
 func findMatchingMetrics(message string, model text2sql.SemanticModel) []MetricRef {
 	if len(model.Metrics) == 0 {
 		return nil

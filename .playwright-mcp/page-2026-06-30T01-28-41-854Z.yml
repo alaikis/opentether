@@ -1,0 +1,18 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]: OT
+    - heading "OpenTether" [level=1] [ref=e7]
+    - paragraph [ref=e8]: 企业级智能体管理平台
+  - generic [ref=e9]:
+    - heading "账号登录" [level=2] [ref=e10]
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: 用户名 *
+        - textbox "用户名 *" [ref=e14]:
+          - /placeholder: 请输入用户名
+      - generic [ref=e15]:
+        - generic [ref=e16]: 密码 *
+        - textbox "密码 *" [ref=e17]:
+          - /placeholder: 请输入密码
+      - button "登 录" [ref=e18] [cursor=pointer]
+  - paragraph [ref=e19]: OpenTether Enterprise v1.0.0

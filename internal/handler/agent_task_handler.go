@@ -125,3 +125,12 @@ func (h *Handler) StreamAgentTaskGraph(c *fiber.Ctx) error {
 	})
 	return nil
 }
+
+func (h *Handler) GetAgentTaskHistory(c *fiber.Ctx) error {
+	id := c.Params("id")
+	history, err := h.services.AgentTasks.GetNodeHistory(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "task graph not found"})
+	}
+	return c.JSON(history)
+}

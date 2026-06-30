@@ -480,6 +480,337 @@ func (m *LettaMemory) extractTopic(query string) string {
 	return ""
 }
 
+// ═══════════════════════════════════════════=
+// Enhanced Soul Evolution: 隐式反馈 + 多维度 Persona
+// ═══════════════════════════════════════════=
+
+type EnhancedSoul struct {
+	UserID             string
+	ProfessionalLevel  string
+	ReplyStyle         string
+	PreferredMetrics   []string
+	Confidence         map[string]float64
+	AvgSessionLength   int
+	FollowUpRate       float64
+	QueryComplexity    float64
+	LockedDimensions   map[string]bool
+	LastEvolvedAt      time.Time
+}
+
+const (
+	ProfessionalBeginner    = "beginner"
+	ProfessionalIntermediate = "intermediate"
+	ProfessionalExpert      = "expert"
+
+	ReplyStyleConcise = "concise"
+	ReplyStyleDetailed = "detailed"
+	ReplyStyleTechnical = "technical"
+)
+
+func (m *LettaMemory) GetEnhancedSoul(userID string) *EnhancedSoul {
+	var existing EnhancedSoulData
+	if err := m.db.Where("user_id = ?", userID).First(&existing).Error; err != nil {
+		return &EnhancedSoul{
+			UserID:           userID,
+			PreferredMetrics: []string{},
+			Confidence:       make(map[string]float64),
+			LockedDimensions: make(map[string]bool),
+		}
+	}
+
+	locked := make(map[string]bool)
+	if existing.LockedDimensions != "" {
+		for _, d := range strings.Split(existing.LockedDimensions, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				locked[d] = true
+			}
+		}
+	}
+
+	metrics := []string{}
+	if existing.PreferredMetrics != "" {
+		metrics = strings.Split(existing.PreferredMetrics, ",")
+	}
+
+	return &EnhancedSoul{
+		UserID:            userID,
+		ProfessionalLevel: existing.ProfessionalLevel,
+		ReplyStyle:        existing.ReplyStyle,
+		PreferredMetrics:  metrics,
+		Confidence:        map[string]float64{"professional": existing.ProfessionalConfidence, "style": existing.StyleConfidence},
+		AvgSessionLength:  existing.AvgSessionLength,
+		FollowUpRate:      existing.FollowUpRate,
+		QueryComplexity:   existing.QueryComplexity,
+		LockedDimensions:  locked,
+		LastEvolvedAt:     existing.LastEvolvedAt,
+	}
+}
+
+func (m *LettaMemory) RecordImplicitFeedback(userID string, sessionLength int, isFollowUp bool, queryComplexity float64) {
+	if m == nil || m.db == nil {
+		return
+	}
+
+	var existing EnhancedSoulData
+	err := m.db.Where("user_id = ?", userID).First(&existing).Error
+	now := time.Now()
+
+	if err == gorm.ErrRecordNotFound {
+		existing = EnhancedSoulData{
+			UserID:           userID,
+			TotalSessions:    1,
+			TotalQueries:     sessionLength,
+			FollowUpCount:    0,
+			ComplexitySum:    queryComplexity,
+			AvgSessionLength: sessionLength,
+			FollowUpRate:     0,
+			QueryComplexity:  queryComplexity,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if isFollowUp {
+			existing.FollowUpCount = 1
+		}
+		m.db.Create(&existing)
+	} else {
+		existing.TotalSessions++
+		existing.TotalQueries += sessionLength
+		existing.ComplexitySum += queryComplexity
+		existing.AvgSessionLength = existing.TotalQueries / existing.TotalSessions
+
+		if isFollowUp {
+			existing.FollowUpCount++
+		}
+		existing.FollowUpRate = float64(existing.FollowUpCount) / float64(existing.TotalQueries)
+		existing.QueryComplexity = existing.ComplexitySum / float64(existing.TotalQueries)
+		existing.UpdatedAt = now
+
+		m.db.Save(&existing)
+	}
+
+	m.triggerEnhancedEvolution(userID)
+}
+
+func (m *LettaMemory) triggerEnhancedEvolution(userID string) {
+	soul := m.GetEnhancedSoul(userID)
+
+	if soul.TotalQueries() >= 5 {
+		m.evolveAdvancedSoul(userID, soul)
+	}
+}
+
+func (s *EnhancedSoul) TotalQueries() int {
+	return s.AvgSessionLength * 10
+}
+
+func (m *LettaMemory) evolveAdvancedSoul(userID string, soul *EnhancedSoul) {
+	if m == nil || m.db == nil {
+		return
+	}
+
+	var existing EnhancedSoulData
+	if err := m.db.Where("user_id = ?", userID).First(&existing).Error; err != nil {
+		return
+	}
+
+	changes := make(map[string]interface{})
+
+	if !soul.LockedDimensions["professional"] {
+		newLevel := calculateProfessionalLevel(existing.QueryComplexity, existing.TotalQueries)
+		if newLevel != existing.ProfessionalLevel {
+			changes["professional_level"] = newLevel
+			changes["professional_confidence"] = min(0.95, existing.ProfessionalConfidence+0.15)
+		}
+	}
+
+	if !soul.LockedDimensions["style"] {
+		newStyle := calculateReplyStyle(existing.FollowUpRate, existing.AvgSessionLength)
+		if newStyle != existing.ReplyStyle {
+			changes["reply_style"] = newStyle
+			changes["style_confidence"] = min(0.95, existing.StyleConfidence+0.15)
+		}
+	}
+
+	if len(changes) > 0 {
+		changes["updated_at"] = time.Now()
+		m.db.Model(&existing).Updates(changes)
+		log.Printf("[Memory] Enhanced soul evolved for user %s: %+v", userID, changes)
+	}
+}
+
+func calculateProfessionalLevel(complexity float64, totalQueries int) string {
+	if totalQueries < 5 {
+		return ProfessionalBeginner
+	}
+
+	if complexity > 0.7 || totalQueries >= 20 {
+		return ProfessionalExpert
+	} else if complexity > 0.4 || totalQueries >= 10 {
+		return ProfessionalIntermediate
+	}
+
+	return ProfessionalBeginner
+}
+
+func calculateReplyStyle(followUpRate float64, avgSessionLength int) string {
+	if avgSessionLength > 5 && followUpRate < 0.2 {
+		return ReplyStyleConcise
+	} else if avgSessionLength <= 2 && followUpRate > 0.5 {
+		return ReplyStyleDetailed
+	} else if avgSessionLength > 8 {
+		return ReplyStyleTechnical
+	}
+
+	return ReplyStyleDetailed
+}
+
+func (m *LettaMemory) LockSoulDimension(userID, dimension string, locked bool) error {
+	var existing EnhancedSoulData
+	if err := m.db.Where("user_id = ?", userID).First(&existing).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			existing = EnhancedSoulData{UserID: userID}
+			m.db.Create(&existing)
+		} else {
+			return err
+		}
+	}
+
+	lockedDims := make(map[string]bool)
+	if existing.LockedDimensions != "" {
+		for _, d := range strings.Split(existing.LockedDimensions, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				lockedDims[d] = true
+			}
+		}
+	}
+
+	if locked {
+		lockedDims[dimension] = true
+	} else {
+		delete(lockedDims, dimension)
+	}
+
+	var dims []string
+	for d := range lockedDims {
+		dims = append(dims, d)
+	}
+
+	return m.db.Model(&existing).Update("locked_dimensions", strings.Join(dims, ",")).Error
+}
+
+func (m *LettaMemory) GetSoulEvolutionHistory(userID string) []EvolutionEvent {
+	var events []EnhancedSoulEvolution
+	m.db.Where("user_id = ?", userID).Order("created_at DESC").Limit(20).Find(&events)
+
+	result := make([]EvolutionEvent, 0, len(events))
+	for _, e := range events {
+		result = append(result, EvolutionEvent{
+			ID:         fmt.Sprintf("%d", e.ID),
+			UserID:     e.UserID,
+			Dimension:  e.Dimension,
+			OldValue:   e.OldValue,
+			NewValue:   e.NewValue,
+			Trigger:    e.Trigger,
+			Confidence: e.Confidence,
+			CreatedAt:  e.CreatedAt,
+		})
+	}
+	return result
+}
+
+type EnhancedSoulData struct {
+	ID                   uint      `gorm:"primaryKey" json:"id"`
+	UserID               string    `gorm:"uniqueIndex" json:"user_id"`
+	ProfessionalLevel    string    `json:"professional_level"`
+	ProfessionalConfidence float64 `json:"professional_confidence"`
+	ReplyStyle           string    `json:"reply_style"`
+	StyleConfidence      float64   `json:"style_confidence"`
+	PreferredMetrics     string    `json:"preferred_metrics"`
+	TotalSessions        int       `json:"total_sessions"`
+	TotalQueries         int       `json:"total_queries"`
+	FollowUpCount        int       `json:"follow_up_count"`
+	AvgSessionLength     int       `json:"avg_session_length"`
+	FollowUpRate         float64   `json:"follow_up_rate"`
+	QueryComplexity      float64   `json:"query_complexity"`
+	ComplexitySum        float64   `json:"complexity_sum"`
+	LockedDimensions     string    `json:"locked_dimensions"`
+	LastEvolvedAt        time.Time `json:"last_evolved_at"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type EvolutionEvent struct {
+	ID         string    `json:"id"`
+	UserID     string    `json:"user_id"`
+	Dimension  string    `json:"dimension"`
+	OldValue   string    `json:"old_value"`
+	NewValue   string    `json:"new_value"`
+	Trigger    string    `json:"trigger"`
+	Confidence float64   `json:"confidence"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func (e EvolutionEvent) GetID() string {
+	return fmt.Sprintf("%d_%s", e.CreatedAt.Unix(), e.Dimension)
+}
+
+type EnhancedSoulEvolution struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	UserID     string    `gorm:"index" json:"user_id"`
+	Dimension  string    `json:"dimension"`
+	OldValue   string    `json:"old_value"`
+	NewValue   string    `json:"new_value"`
+	Trigger    string    `json:"trigger"`
+	Confidence float64   `json:"confidence"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func (m *LettaMemory) AutoCreateEnhancedSoulTable() {
+	if m.db.Migrator().HasTable(&EnhancedSoulData{}) {
+		return
+	}
+	if err := m.db.AutoMigrate(&EnhancedSoulData{}); err != nil {
+		log.Printf("[Memory] Failed to create enhanced_soul_data table: %v", err)
+		return
+	}
+	if err := m.db.AutoMigrate(&EnhancedSoulEvolution{}); err != nil {
+		log.Printf("[Memory] Failed to create enhanced_soul_evolution table: %v", err)
+		return
+	}
+	log.Printf("[Memory] Enhanced soul tables created successfully")
+}
+
+func (m *LettaMemory) BuildEnhancedSoulPrompt(userID string, basePrompt string) string {
+	soul := m.GetEnhancedSoul(userID)
+	profile := m.GetUserSoul(userID)
+
+	var sb strings.Builder
+
+	sb.WriteString("## 用户画像 (增强版)\n")
+
+	if profile.Persona != "" {
+		sb.WriteString(fmt.Sprintf("- 基础人格: %s\n", profile.Persona))
+	}
+
+	if soul.ProfessionalLevel != "" {
+		sb.WriteString(fmt.Sprintf("- 专业级别: %s\n", soul.ProfessionalLevel))
+	}
+	if soul.ReplyStyle != "" {
+		sb.WriteString(fmt.Sprintf("- 回复风格: %s\n", soul.ReplyStyle))
+	}
+	if len(soul.PreferredMetrics) > 0 {
+		sb.WriteString(fmt.Sprintf("- 常用指标: %s\n", strings.Join(soul.PreferredMetrics, ", ")))
+	}
+	if soul.FollowUpRate > 0 {
+		sb.WriteString(fmt.Sprintf("- 追问率: %.1f%%\n", soul.FollowUpRate*100))
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString(basePrompt)
+
+	return sb.String()
+}
+
 // ════════════════════════════════════════════
 // Auto-Learning: 从用户行为中自动学习偏好
 // ════════════════════════════════════════════

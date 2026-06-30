@@ -10,6 +10,9 @@ import (
 func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	api := app.Group("/api/v1")
 
+	// Metrics endpoint (public for Prometheus scraping)
+	app.Get("/metrics", h.Metrics)
+
 	// Health check
 	app.Get("/health", h.HealthCheck)
 
@@ -77,6 +80,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	taskGraph.Get("/:id", h.GetAgentTaskGraph)
 	taskGraph.Get("/:id/visualization", h.GetAgentTaskGraphVisualization)
 	taskGraph.Get("/:id/events", h.StreamAgentTaskGraph)
+	taskGraph.Get("/:id/history", h.GetAgentTaskHistory)
 	taskGraph.Post("/:id/resume", h.ResumeAgentTaskGraph)
 	taskGraph.Post("/:id/cancel", h.CancelAgentTaskGraph)
 	taskGraph.Post("/:id/nodes", h.InsertAgentTaskNode)
@@ -91,6 +95,15 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	webhookAdmin.Put("/:id", h.SaveWebhookConfig)
 	webhookAdmin.Delete("/:id", h.DeleteWebhookConfig)
 
+	enterpriseAdmin := adminAdmin.Group("/enterprise")
+	enterpriseAdmin.Get("/settings", h.EnterpriseSettings)
+	enterpriseAdmin.Post("/settings", h.SaveEnterpriseSetting)
+	enterpriseAdmin.Get("/skill-publish", h.ListSkillPublishRequests)
+	enterpriseAdmin.Post("/skills/:id/publish-request", h.RequestSkillPublish)
+	enterpriseAdmin.Post("/skill-publish/:id/review", h.ReviewSkillPublish)
+	enterpriseAdmin.Get("/backups", h.ListBackups)
+	enterpriseAdmin.Post("/backups", h.CreateBackup)
+
 	// 智能体评测
 	evalAdmin := adminAdmin.Group("/eval")
 	evalAdmin.Get("/cases", h.ListEvalCases)
@@ -99,6 +112,11 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	evalAdmin.Delete("/cases/:id", h.DeleteEvalCase)
 	evalAdmin.Post("/cases/:id/run", h.RunEvalCase)
 	evalAdmin.Get("/runs", h.ListEvalRuns)
+
+	// 智能体验证与监控
+	agentValidationAdmin := adminAdmin.Group("/agent/validation")
+	agentValidationAdmin.Get("/backtest", h.AgentBacktest)
+	agentValidationAdmin.Get("/metrics", h.AgentQualityMetrics)
 
 	adminAdmin.Post("/sql-templates/test", h.TestSQLTemplate)
 
@@ -179,6 +197,11 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	adminAdmin.Post("/skills/ai-generate-relations", h.GenerateText2SQLRelations)
 	adminAdmin.Post("/skills/ai-generate-relations/stream", h.GenerateText2SQLRelationsStream)
 
+	adminAdmin.Get("/skill-intent-rules", h.ListSkillIntentRules)
+	adminAdmin.Post("/skill-intent-rules", h.CreateSkillIntentRule)
+	adminAdmin.Put("/skill-intent-rules/:id", h.UpdateSkillIntentRule)
+	adminAdmin.Delete("/skill-intent-rules/:id", h.DeleteSkillIntentRule)
+
 	// MCP
 	admin.Get("/mcp/configs", h.ListMCPConfigs)
 	adminAdmin.Post("/mcp/configs", h.CreateMCPConfig)
@@ -189,6 +212,43 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	admin.Get("/mcp/configs/:id/status", h.GetMCPStatus)
 	admin.Get("/mcp/configs/:id/tools", h.ListMCPTools)
 	adminAdmin.Post("/mcp/configs/:id/call", h.CallMCPTool)
+	admin.Get("/mcp/servers", h.ListMCPServers)
+	adminAdmin.Post("/mcp/servers", h.RegisterMCPServer)
+
+	// Observability
+	admin.Get("/metrics/definitions", h.ListMetricDefinitions)
+	adminAdmin.Post("/metrics/definitions", h.CreateMetricDefinition)
+	admin.Get("/metrics/:id/query", h.QueryMetrics)
+	admin.Get("/alerts/rules", h.ListAlertRules)
+	adminAdmin.Post("/alerts/rules", h.CreateAlertRule)
+	adminAdmin.Put("/alerts/rules/:id", h.UpdateAlertRule)
+	adminAdmin.Delete("/alerts/rules/:id", h.DeleteAlertRule)
+	admin.Get("/alerts/events", h.ListAlertEvents)
+	admin.Post("/alerts/events/:id/ack", h.AckAlert)
+
+	// Audit
+	admin.Get("/audit/logs", h.ListAuditLogs)
+	adminAdmin.Post("/audit/logs/export", h.ExportAuditLogs)
+	adminAdmin.Post("/audit/logs/export/s3", h.ExportAuditLogsToS3)
+	admin.Get("/audit/compliance/reports", h.ListComplianceReports)
+	adminAdmin.Post("/audit/compliance/reports", h.GenerateComplianceReport)
+
+	// Distributed Hub
+	admin.Get("/hub/nodes", h.ListHubNodes)
+	adminAdmin.Post("/hub/nodes", h.RegisterHubNode)
+	adminAdmin.Delete("/hub/nodes/:id", h.DeregisterHubNode)
+	admin.Get("/hub/tasks", h.ListHubTasks)
+	adminAdmin.Post("/hub/tasks", h.SubmitHubTask)
+	admin.Get("/hub/tasks/:id/results", h.GetHubTaskResults)
+	admin.Post("/hub/tasks/:id/cancel", h.CancelHubTask)
+
+	// Auto-Tuning
+	admin.Get("/tuning/jobs", h.ListTuningJobs)
+	adminAdmin.Post("/tuning/jobs", h.CreateTuningJob)
+	adminAdmin.Post("/tuning/jobs/:id/start", h.StartTuningJob)
+	adminAdmin.Get("/tuning/jobs/:id/iterations", h.ListTuningIterations)
+	adminAdmin.Post("/tuning/jobs/:id/rollback", h.RollbackTuningJob)
+	admin.Get("/tuning/suggestions", h.GetTuningSuggestions)
 
 	// 报表
 	adminAdmin.Post("/reports/pdf", h.GeneratePDFReport)
@@ -214,6 +274,12 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	admin.Get("/im/pairings", h.ListIMPairings)
 	adminAdmin.Delete("/im/pairings/:id", h.UnbindIM)
 
+	// 多任务工作流
+	multiTask := adminAdmin.Group("/multi-task")
+	multiTask.Post("/plan", h.PlanMultiTask)
+	multiTask.Post("/execute", h.ExecuteMultiTask)
+	multiTask.Get("/plans", h.ListMultiTaskPlans)
+
 	// 经验管理
 	admin.Get("/experiences", h.ListExperiences)
 	admin.Get("/experiences/:id", h.GetExperience)
@@ -237,6 +303,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 
 	// 日志
 	admin.Get("/logs/audit", h.ListAuditLogs)
+	admin.Get("/prompts/versions", h.ListPromptVersions)
 	admin.Get("/logs/request", h.ListRequestLogs)
 	admin.Get("/logs/export", h.ExportLogs)
 
@@ -258,6 +325,7 @@ func registerAPIRoutes(app *fiber.App, h *handler.Handler, jwtSecret string) {
 	ragAdmin.Get("/documents", h.RAGListDocuments)
 	ragAdmin.Delete("/documents/:id", h.RAGDeleteDocument)
 	ragAdmin.Get("/retrieve", h.RAGRetrieve)
+	ragAdmin.Get("/search", h.RAGSearch)
 
 	// === 用户接口 ===
 	user := api.Group("/user", auth)

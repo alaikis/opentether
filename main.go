@@ -134,6 +134,7 @@ func main() {
 	app.Use(recover.New())
 	app.Use(middleware.PanicRecovery())
 	app.Use(middleware.QuerySizeLimits(64 * 1024))
+	app.Use(compress.New(compress.Config{Level: compress.LevelBestSpeed}))
 	app.Use(logger.New(logger.Config{
 		Format:     "[${time}] ${status} - ${method} ${path} ${latency}\n",
 		TimeFormat: "2006-01-02 15:04:05",

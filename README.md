@@ -76,17 +76,96 @@ security:
 
 ## 主要 API 端点
 
-| 模块 | 端点 | 说明 |
+### 认证与用户
+
+| 方法 | 端点 | 说明 |
 |------|------|------|
-| 认证 | POST /api/v1/auth/login | 用户登录 |
-| 用户 | GET/POST /api/v1/admin/users | 用户管理 |
-| 用户组 | GET/POST /api/v1/admin/groups | 用户组管理 |
-| Provider | GET/POST /api/v1/admin/providers | LLM Provider |
-| 数据源 | GET/POST /api/v1/admin/datasources | 数据源管理 |
-| Skills | GET/POST /api/v1/admin/skills | Skills 配置 |
-| 任务 | GET/POST /api/v1/admin/tasks | 定时任务 |
-| IM | GET/POST /api/v1/admin/im/configs | IM 配置 |
-| 对话 | POST /api/v1/user/chat | AI 对话 |
+| POST | /api/v1/auth/login | 用户登录 |
+| POST | /api/v1/auth/refresh | 刷新 Token |
+| GET | /api/v1/admin/users | 用户列表 |
+| POST | /api/v1/admin/users | 创建用户 |
+| PUT | /api/v1/admin/users/:id | 更新用户 |
+| DELETE | /api/v1/admin/users/:id | 删除用户 |
+
+### 智能体与对话
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | /api/v1/user/chat | AI 对话 |
+| POST | /api/v1/user/chat/stream | 流式对话 |
+| GET | /api/v1/user/conversations | 对话列表 |
+| GET | /api/v1/admin/agent-task-graphs | 任务图列表 |
+| POST | /api/v1/admin/agent-task-graphs | 创建任务图 |
+| GET | /api/v1/admin/agent-task-graphs/:id | 任务图详情 |
+| GET | /api/v1/prompts/versions | Prompt 版本列表 |
+
+### RAG 检索增强
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | /api/v1/admin/rag/ingest | 文档入库 |
+| GET | /api/v1/admin/rag/documents | 文档列表 |
+| DELETE | /api/v1/admin/rag/documents/:id | 删除文档 |
+| GET | /api/v1/admin/rag/retrieve | 语义检索 |
+| GET | /api/v1/admin/rag/search | 关键词检索 |
+
+### 审计与日志
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | /api/v1/admin/audit/logs | 审计日志 |
+| POST | /api/v1/admin/audit/logs/export | 导出审计日志 |
+| POST | /api/v1/admin/audit/logs/export/s3 | 导出到 S3 |
+| GET | /api/v1/admin/audit/compliance/reports | 合规报告 |
+| POST | /api/v1/admin/audit/compliance/reports | 生成合规报告 |
+
+### 自动调优
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | /api/v1/admin/tuning/jobs | 调优任务列表 |
+| POST | /api/v1/admin/tuning/jobs | 创建调优任务 |
+| POST | /api/v1/admin/tuning/jobs/:id/start | 启动调优 |
+| GET | /api/v1/admin/tuning/jobs/:id/iterations | 调优迭代历史 |
+| POST | /api/v1/admin/tuning/jobs/:id/rollback | 回滚调优 |
+| GET | /api/v1/admin/tuning/suggestions | 参数建议 |
+
+### 可观测性
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | /api/v1/admin/metrics/definitions | 指标定义列表 |
+| POST | /api/v1/admin/metrics/definitions | 创建指标定义 |
+| GET | /api/v1/admin/metrics/:id/query | 查询指标数据 |
+| GET | /api/v1/admin/alerts/rules | 告警规则列表 |
+| POST | /api/v1/admin/alerts/rules | 创建告警规则 |
+| GET | /api/v1/admin/alerts/events | 告警事件列表 |
+| POST | /api/v1/admin/alerts/events/:id/ack | 确认告警 |
+
+### MCP 工具生态
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | /api/v1/admin/mcp/configs | MCP 配置列表 |
+| POST | /api/v1/admin/mcp/configs | 创建 MCP 配置 |
+| POST | /api/v1/admin/mcp/configs/:id/start | 启动 MCP 服务器 |
+| POST | /api/v1/admin/mcp/configs/:id/stop | 停止 MCP 服务器 |
+| GET | /api/v1/admin/mcp/configs/:id/tools | 列出工具 |
+| POST | /api/v1/admin/mcp/configs/:id/call | 调用工具 |
+| GET | /api/v1/admin/mcp/servers | 服务器列表 |
+| POST | /api/v1/admin/mcp/servers | 注册服务器 |
+
+### 分布式 Hub
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | /api/v1/admin/hub/nodes | 节点列表 |
+| POST | /api/v1/admin/hub/nodes | 注册节点 |
+| DELETE | /api/v1/admin/hub/nodes/:id | 注销节点 |
+| GET | /api/v1/admin/hub/tasks | 任务列表 |
+| POST | /api/v1/admin/hub/tasks | 提交任务 |
+| GET | /api/v1/admin/hub/tasks/:id/results | 任务结果 |
+| POST | /api/v1/admin/hub/tasks/:id/cancel | 取消任务 |
 
 ## 开发
 

@@ -43,19 +43,25 @@ func (p *WorkerPool) Active() int64 { return atomic.LoadInt64(&p.active) }
 func (p *WorkerPool) Shutdown()     { close(p.tasks); p.wg.Wait() }
 
 type Metrics struct {
-	FastPathHits    int64
-	AgentLoopCalls  int64
-	LLMCalls        int64
-	SQLCalls        int64
-	ToolCalls       int64
-	CacheHits       int64
-	TotalTokens     int64
-	TotalDurationMs int64
+	FastPathHits       int64
+	AgentLoopCalls     int64
+	LLMCalls           int64
+	LLMRetries         int64
+	LLMParseErrors     int64
+	LLMEmptyResponses  int64
+	SQLCalls           int64
+	ToolCalls          int64
+	CacheHits          int64
+	TotalTokens        int64
+	TotalDurationMs    int64
 }
 
 func (m *Metrics) IncFastPath()         { atomic.AddInt64(&m.FastPathHits, 1) }
 func (m *Metrics) IncAgentLoop()        { atomic.AddInt64(&m.AgentLoopCalls, 1) }
 func (m *Metrics) IncLLM()              { atomic.AddInt64(&m.LLMCalls, 1) }
+func (m *Metrics) IncLLMRetry()         { atomic.AddInt64(&m.LLMRetries, 1) }
+func (m *Metrics) IncLLMParseError()    { atomic.AddInt64(&m.LLMParseErrors, 1) }
+func (m *Metrics) IncLLMEmptyResponse() { atomic.AddInt64(&m.LLMEmptyResponses, 1) }
 func (m *Metrics) IncSQL()              { atomic.AddInt64(&m.SQLCalls, 1) }
 func (m *Metrics) IncTool()             { atomic.AddInt64(&m.ToolCalls, 1) }
 func (m *Metrics) IncCacheHit()         { atomic.AddInt64(&m.CacheHits, 1) }
@@ -63,14 +69,17 @@ func (m *Metrics) AddTokens(n int)      { atomic.AddInt64(&m.TotalTokens, int64(
 func (m *Metrics) AddDuration(ms int64) { atomic.AddInt64(&m.TotalDurationMs, ms) }
 func (m *Metrics) Snapshot() map[string]int64 {
 	return map[string]int64{
-		"fast_path_hits":    atomic.LoadInt64(&m.FastPathHits),
-		"agent_loop_calls":  atomic.LoadInt64(&m.AgentLoopCalls),
-		"llm_calls":         atomic.LoadInt64(&m.LLMCalls),
-		"sql_calls":         atomic.LoadInt64(&m.SQLCalls),
-		"tool_calls":        atomic.LoadInt64(&m.ToolCalls),
-		"cache_hits":        atomic.LoadInt64(&m.CacheHits),
-		"total_tokens":      atomic.LoadInt64(&m.TotalTokens),
-		"total_duration_ms": atomic.LoadInt64(&m.TotalDurationMs),
+		"fast_path_hits":       atomic.LoadInt64(&m.FastPathHits),
+		"agent_loop_calls":     atomic.LoadInt64(&m.AgentLoopCalls),
+		"llm_calls":            atomic.LoadInt64(&m.LLMCalls),
+		"llm_retries":          atomic.LoadInt64(&m.LLMRetries),
+		"llm_parse_errors":     atomic.LoadInt64(&m.LLMParseErrors),
+		"llm_empty_responses":  atomic.LoadInt64(&m.LLMEmptyResponses),
+		"sql_calls":            atomic.LoadInt64(&m.SQLCalls),
+		"tool_calls":           atomic.LoadInt64(&m.ToolCalls),
+		"cache_hits":           atomic.LoadInt64(&m.CacheHits),
+		"total_tokens":         atomic.LoadInt64(&m.TotalTokens),
+		"total_duration_ms":    atomic.LoadInt64(&m.TotalDurationMs),
 	}
 }
 

@@ -33,6 +33,10 @@ func NewHandlers(services *service.Services, cfg *config.Config, db *gorm.DB) *H
 	}
 }
 
+func generateID() string {
+	return fmt.Sprintf("%d_%d", time.Now().UnixNano(), time.Now().Unix()%10000)
+}
+
 // audit logs an operation to the audit log
 func (h *Handler) audit(c *fiber.Ctx, action, resourceType, resourceID, details string) {
 	userID := ""
@@ -56,6 +60,62 @@ func (h *Handler) HealthCheck(c *fiber.Ctx) error {
 		"status": "ok",
 		"name":   "OpenTether",
 	})
+}
+
+// Metrics 返回 Prometheus 格式的系统指标
+func (h *Handler) Metrics(c *fiber.Ctx) error {
+	agentSvc := service.NewAgentService(h.db, h.config, nil)
+	engine := agentSvc.GetEngine()
+
+	var metricsOutput string
+
+	if engine != nil {
+		observer := engine.GetObserver()
+		feedbackLoop := engine.GetFeedbackLoop()
+		promptEvolution := engine.GetPromptEvolution()
+
+		if observer != nil {
+			metricsOutput += observer.ExportPrometheus()
+
+			health := observer.GetSystemHealth()
+			metricsOutput += "# HELP wisehoof_system_health System health metrics\n"
+			metricsOutput += "# TYPE wisehoof_system_health gauge\n"
+			for k, v := range health {
+				switch val := v.(type) {
+				case float64:
+					metricsOutput += fmt.Sprintf("wisehoof_system_health{metric=\"%s\"} %.4f\n", k, val)
+				case int:
+					metricsOutput += fmt.Sprintf("wisehoof_system_health{metric=\"%s\"} %d\n", k, val)
+				}
+			}
+		}
+
+		if feedbackLoop != nil {
+			stats := feedbackLoop.GetStats()
+			metricsOutput += "# HELP wisehoof_feedback_loop_processed_total Total processed observations\n"
+			metricsOutput += "# TYPE wisehoof_feedback_loop_processed_total counter\n"
+			if pc, ok := stats["processed_count"].(int64); ok {
+				metricsOutput += fmt.Sprintf("wisehoof_feedback_loop_processed_total %d\n", pc)
+			}
+		}
+
+		if promptEvolution != nil {
+			promptStats := promptEvolution.GetStats()
+			metricsOutput += "# HELP wisehoof_prompt_versions_total Total prompt versions\n"
+			metricsOutput += "# TYPE wisehoof_prompt_versions_total gauge\n"
+			if tv, ok := promptStats["total_versions"].(int); ok {
+				metricsOutput += fmt.Sprintf("wisehoof_prompt_versions_total %d\n", tv)
+			}
+			if dt, ok := promptStats["dynamic_threshold"].(float64); ok {
+				metricsOutput += fmt.Sprintf("# HELP wisehoof_prompt_dynamic_threshold Current dynamic threshold\n")
+				metricsOutput += fmt.Sprintf("# TYPE wisehoof_prompt_dynamic_threshold gauge\n")
+				metricsOutput += fmt.Sprintf("wisehoof_prompt_dynamic_threshold %.4f\n", dt)
+			}
+		}
+	}
+
+	c.Set("Content-Type", "text/plain; version=0.0.4")
+	return c.SendString(metricsOutput)
 }
 
 // SetupStatus 检查系统初始化状态
@@ -611,6 +671,44 @@ func (h *Handler) GenerateText2SQLRelationsStream(c *fiber.Ctx) error {
 	}
 	c.Write([]byte("data: [DONE]\n\n"))
 	return nil
+}
+
+func (h *Handler) ListSkillIntentRules(c *fiber.Ctx) error {
+	rows, err := h.services.Skill.ListIntentRules()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rows)
+}
+
+func (h *Handler) CreateSkillIntentRule(c *fiber.Ctx) error {
+	var row models.SkillIntentRule
+	if err := c.BodyParser(&row); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := h.services.Skill.CreateIntentRule(&row); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(row)
+}
+
+func (h *Handler) UpdateSkillIntentRule(c *fiber.Ctx) error {
+	var row models.SkillIntentRule
+	if err := c.BodyParser(&row); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	row.ID = c.Params("id")
+	if err := h.services.Skill.UpdateIntentRule(&row); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(row)
+}
+
+func (h *Handler) DeleteSkillIntentRule(c *fiber.Ctx) error {
+	if err := h.services.Skill.DeleteIntentRule(c.Params("id")); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(204)
 }
 
 // Task handlers

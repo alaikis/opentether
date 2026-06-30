@@ -130,12 +130,16 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 			for _, sub := range plan.SubTasks {
 				subOutput, _ := e.executeTool(ctx, user, plan.Tools[0], map[string]interface{}{"question": sub})
 				if isOutputTruncated(subOutput) {
-					subOutput = e.recursiveSplit(ctx, provider, user, sub, plan.Tools[0], 10)
+					maxDepth := e.maxRecursionDepth
+					if maxDepth <= 0 {
+						maxDepth = 3
+					}
+					subOutput = e.recursiveSplit(ctx, provider, user, sub, plan.Tools[0], maxDepth)
 				}
 				results = append(results, fmt.Sprintf("- %s: %s", sub, subOutput))
 			}
 			return &ChatResponse{
-				Message:        "已自动拆分查询并汇总：\n" + strings.Join(results, "\n\n"),
+				Message:        stripEnvironmentDetailsFromPrompt("已自动拆分查询并汇总：\n" + strings.Join(results, "\n\n")),
 				ConversationID: conversationID,
 				SkillUsed:      "auto_split",
 				Data:           map[string]interface{}{"sub_tasks": plan.SubTasks},
@@ -145,7 +149,7 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 
 	// 获取可用工具列表（受用户权限限制），并按当前任务裁剪 Prompt 工具上下文
 	allTools := e.getAvailableTools(user)
-	availableTools := selectRelevantTools(query, allTools, 8)
+	availableTools := e.selectRelevantTools(query, allTools, 8)
 	if plan != nil && len(plan.Tools) > 0 {
 		availableTools = filterToolsByPlan(allTools, plan.Tools)
 	}
@@ -162,6 +166,7 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 
 	// 构建系统 prompt（含可用工具描述 + 边界约束 + 长期记忆 + 当前问题召回 + RAG上下文），并进行预算裁剪
 	systemPrompt := e.buildSystemPrompt(availableTools, user, query)
+	systemPrompt = e.compressPromptIfNeeded(ctx, provider, systemPrompt)
 	ragContext := e.fetchRAGContext(query)
 	if ragContext != "" {
 		systemPrompt += "\n\n## 相关知识库文档\n" + ragContext
@@ -210,6 +215,12 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 			finalMsg := fallbackDecisionFromText(query).FinalAnswer
 			if resp != nil && strings.TrimSpace(resp.Content) != "" {
 				finalMsg = resp.Content
+			}
+			if e.llmQualityIssues >= 3 {
+				fallbackResp := e.fallbackOnLLMDegradation(user, query, conversationID)
+				e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "llm_degradation_fallback", map[string]interface{}{"message": fallbackResp.Message, "skill_used": fallbackResp.SkillUsed})
+				e.finishRuntimeJob(runtimeJob, "succeeded", fallbackResp.Message, "LLM 质量降级，直接执行技能")
+				return fallbackResp, nil
 			}
 			e.RecordFailure(query, fmt.Sprintf("%v", parseErr))
 			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "correction_exhausted", map[string]interface{}{"error": fmt.Sprintf("%v", parseErr)})
@@ -280,7 +291,7 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 			})
 
 			// === 边界检查：工具是否在用户权限范围内 ===
-			if !toolNames[decision.ToolName] {
+			if !toolNames[decision.ToolName] && !hasToolPrefix(toolNames, decision.ToolName) {
 				log.Printf("[Loop] 拒绝未授权工具: %s (user=%s)", decision.ToolName, user.UserID)
 				step.Error = fmt.Sprintf("工具 %s 不在可用范围内", decision.ToolName)
 				step.ToolOutput = fmt.Sprintf("[系统] 工具 %s 不可用，你只能使用: %v。请用已有工具或直接回答。", decision.ToolName, availableToolNames(availableTools))
@@ -306,6 +317,11 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 			loop.Observations = append(loop.Observations, observation)
 			loop.History = append(loop.History, step)
 			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "tool_result", step)
+			if step.Error == "" && isCompleteToolResult(step.ToolOutput) {
+				answer := summarizeToolResult(step.ToolOutput)
+				e.finishRuntimeJob(runtimeJob, "succeeded", answer, "工具结果完整，自动终止")
+				return &ChatResponse{Message: answer, ConversationID: conversationID, SkillUsed: "agent_loop", TokensUsed: totalTokens, Data: map[string]interface{}{"iterations": loop.Iteration + 1, "history": loop.History, "auto_stopped": true}}, nil
+			}
 
 		case "parallel_calls":
 			// === 并行执行：多个互不依赖的工具调用同时执行 ===
@@ -339,6 +355,10 @@ func (e *AgentEngine) ExecuteLoopWithEvents(ctx context.Context, user *UserConte
 			loop.Observations = append(loop.Observations, observation)
 			loop.History = append(loop.History, parallelSteps...)
 			e.saveRuntimeCheckpoint(runtimeJob, loop.Iteration, "parallel_results", parallelSteps)
+			if answer, ok := summarizeCompleteParallelResults(parallelSteps); ok {
+				e.finishRuntimeJob(runtimeJob, "succeeded", answer, "并行工具结果完整，自动终止")
+				return &ChatResponse{Message: answer, ConversationID: conversationID, SkillUsed: "agent_loop", TokensUsed: totalTokens, Data: map[string]interface{}{"iterations": loop.Iteration + 1, "history": loop.History, "auto_stopped": true}}, nil
+			}
 
 		case "clarify":
 			// === 参数补全：向用户提问，等待下一轮对话补充参数 ===
@@ -461,12 +481,31 @@ func (e *AgentEngine) retryLoopDecision(ctx context.Context, llmClient llm.Clien
 			ResponseFormat: &llm.ResponseFormat{Type: "json_object"},
 		}, 3)
 		if err != nil {
+			e.llmQualityIssues++
+			if e.metrics != nil {
+				e.metrics.IncLLMRetry()
+			}
+			if e.llmQualityIssues >= 5 {
+				log.Printf("[Loop] LLM quality degraded (%d consecutive issues), triggering fallback", e.llmQualityIssues)
+				e.llmQualityIssues = 0
+				return nil, nil, fmt.Errorf("LLM 连续异常，已降级为直接回答模式"), totalTokens
+			}
 			return nil, nil, fmt.Errorf("LLM 调用失败（重试%d次后）: %w", attempt+1, err), totalTokens
 		}
+		e.llmQualityIssues = 0
 
 		totalTokens += resp.Usage.TotalTokens
 
 		if strings.TrimSpace(resp.Content) == "" {
+			e.llmQualityIssues++
+			if e.metrics != nil {
+				e.metrics.IncLLMEmptyResponse()
+			}
+			if e.llmQualityIssues >= 3 {
+				log.Printf("[Loop] LLM returned empty response %d times, triggering fallback", e.llmQualityIssues)
+				e.llmQualityIssues = 0
+				return nil, nil, fmt.Errorf("LLM 连续返回空响应，已降级为直接回答模式"), totalTokens
+			}
 			if attempt < maxRounds-1 {
 				messages = append(messages, llm.Message{Role: "user", Content: "你的响应为空，请返回有效的 JSON 决策。"})
 				continue
@@ -474,20 +513,29 @@ func (e *AgentEngine) retryLoopDecision(ctx context.Context, llmClient llm.Clien
 			return resp, fallbackDecisionFromText(""), fmt.Errorf("空响应, 已重试 %d 次", attempt+1), totalTokens
 		}
 
-		// 优先尝试 native function call
 		if decision, ok := parseNativeFunctionCall(resp, resp.Content); ok {
+			e.llmQualityIssues = 0
 			return resp, decision, nil, totalTokens
 		}
 
 		decision, parseErr := parseLoopDecision(resp.Content)
 		if parseErr == nil && decision != nil && decision.Action != "" {
+			e.llmQualityIssues = 0
 			return resp, decision, nil, totalTokens
 		}
 
-		// AI correction: feed parse error or empty-action back to LLM
 		errMsg := fmt.Sprintf("解析失败: %v", parseErr)
 		if parseErr == nil && decision != nil && decision.Action == "" {
 			errMsg = "决策缺少 action 字段"
+		}
+		e.llmQualityIssues++
+		if e.metrics != nil {
+			e.metrics.IncLLMParseError()
+		}
+		if e.llmQualityIssues >= 5 {
+			log.Printf("[Loop] LLM parse quality degraded (%d consecutive issues), triggering fallback", e.llmQualityIssues)
+			e.llmQualityIssues = 0
+			return resp, fallbackDecisionFromText(resp.Content), fmt.Errorf("LLM 连续解析失败，已降级为兜底模式"), totalTokens
 		}
 		if attempt < maxRounds-1 {
 			correction := fmt.Sprintf("你上次的响应 JSON 格式无效（%s）。请修正并只返回有效的 JSON 决策对象。上次响应: %s", errMsg, truncateForLog(resp.Content, 200))
@@ -652,8 +700,92 @@ func countUnescapedQuotes(s string) int {
 	return count
 }
 
+func isCompleteToolResult(output string) bool {
+	out := strings.TrimSpace(output)
+	if out == "" {
+		return false
+	}
+	truncationMarkers := []string{"被截断", "超出", "不完整", "truncated", "exceeded"}
+	for _, marker := range truncationMarkers {
+		if strings.Contains(out, marker) {
+			return false
+		}
+	}
+	if strings.Contains(out, "工具执行失败") || strings.Contains(out, "执行失败") {
+		return false
+	}
+	var jsonData map[string]interface{}
+	if json.Unmarshal([]byte(out), &jsonData) == nil {
+		hasColumns := false
+		hasRows := false
+		if cols, ok := jsonData["columns"].(string); ok && cols != "" {
+			hasColumns = true
+		} else if colsArr, ok := jsonData["columns"].([]interface{}); ok && len(colsArr) > 0 {
+			hasColumns = true
+		}
+		if _, ok := jsonData["rows"].([]interface{}); ok {
+			hasRows = true
+		}
+		if _, ok := jsonData["row_count"].(float64); ok {
+			hasRows = true
+		}
+		if hasColumns && hasRows {
+			return true
+		}
+		if hasColumns || hasRows {
+			return true
+		}
+	}
+	legacyMarkers := []string{"[SQL]", "[列]", "[数据]", "[统计]"}
+	legacyCount := 0
+	for _, marker := range legacyMarkers {
+		if strings.Contains(out, marker) {
+			legacyCount++
+		}
+	}
+	if legacyCount >= 2 {
+		return true
+	}
+	if len([]rune(out)) > 100 && strings.Contains(out, "查询成功") {
+		return true
+	}
+	return false
+}
+
+func summarizeToolResult(output string) string {
+	out := stripEnvironmentDetailsFromPrompt(output)
+	if len([]rune(out)) > 3000 {
+		out = string([]rune(out)[:3000]) + "\n..."
+	}
+	return out
+}
+
+func summarizeCompleteParallelResults(steps []LoopStep) (string, bool) {
+	parts := make([]string, 0, len(steps))
+	okCount := 0
+	failCount := 0
+	for _, step := range steps {
+		if step.Error != "" {
+			failCount++
+			continue
+		}
+		if isCompleteToolResult(step.ToolOutput) {
+			okCount++
+			parts = append(parts, summarizeToolResult(step.ToolOutput))
+		}
+	}
+	if okCount == 0 {
+		return "", false
+	}
+	summary := strings.Join(parts, "\n\n---\n\n")
+	if failCount > 0 {
+		summary = fmt.Sprintf("⚠️ %d个任务执行失败，成功结果如下：\n\n%s", failCount, summary)
+	}
+	return summary, true
+}
+
 func fallbackDecisionFromText(text string) *LoopDecision {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(stripEnvironmentDetailsFromPrompt(text))
 	if text == "" {
 		text = "抱歉，本次模型响应为空或被截断，请重新尝试。"
 	} else if looksLikeToolCallLeak(text) {
@@ -700,7 +832,11 @@ func buildNativeTools(tools []ToolDef) []llm.Tool {
 		if len(tool.Parameters) > 0 {
 			props := map[string]interface{}{}
 			for k, v := range tool.Parameters {
-				props[k] = v
+				if schema, ok := v.(map[string]interface{}); ok {
+					props[k] = schema
+				} else {
+					props[k] = map[string]interface{}{"type": "string", "description": fmt.Sprint(v)}
+				}
 			}
 			params["properties"] = props
 		}
@@ -721,7 +857,7 @@ type agentPlan struct {
 func (e *AgentEngine) perceiveAndPlan(ctx context.Context, provider *models.Provider, query string) *agentPlan {
 	client, err := llm.NewClient(provider)
 	if err != nil {
-		return nil
+		return e.ruleBasedPlan(query)
 	}
 	prompt := fmt.Sprintf(`你是感知与规划器。分析用户问题，返回分类、实体、需要的工具和子任务。只返回 JSON，不要解释。
 
@@ -743,13 +879,55 @@ func (e *AgentEngine) perceiveAndPlan(ctx context.Context, provider *models.Prov
 		ResponseFormat: &llm.ResponseFormat{Type: "json_object"},
 	}, 2)
 	if err != nil || resp == nil || strings.TrimSpace(resp.Content) == "" {
-		return nil
+		return e.ruleBasedPlan(query)
 	}
 	var plan agentPlan
 	if json.Unmarshal([]byte(resp.Content), &plan) != nil || plan.Action == "" {
-		return nil
+		return e.ruleBasedPlan(query)
 	}
 	return &plan
+}
+
+func (e *AgentEngine) ruleBasedPlan(query string) *agentPlan {
+	lower := strings.ToLower(query)
+	intent := "chat"
+	tools := []string{}
+
+	if e != nil && e.db != nil {
+		var rules []models.SkillIntentRule
+		e.db.Where("enabled = ?", true).Order("priority DESC").Find(&rules)
+		for _, rule := range rules {
+			if rule.Intent != "" && strings.Contains(lower, strings.ToLower(rule.Intent)) {
+				intent = rule.SkillType
+				if rule.SkillType != "" {
+					tools = append(tools, rule.SkillType)
+				}
+				break
+			}
+		}
+	}
+
+	if len(tools) == 0 {
+		keywords := map[string][]string{
+			"text2sql": {"销售", "销售额", "订单", "查询", "查", "数据"},
+			"report":   {"报表", "报告", "统计", "分析"},
+			"pdf":      {"pdf", "导出"},
+		}
+		for tool, kws := range keywords {
+			for _, kw := range kws {
+				if strings.Contains(lower, kw) {
+					intent = tool
+					tools = append(tools, tool)
+					break
+				}
+			}
+		}
+	}
+
+	if len(tools) == 0 {
+		tools = append(tools, "chat")
+	}
+	return &agentPlan{Action: "tool_call", Intent: intent, Tools: tools, SubTasks: []string{}}
 }
 
 func filterToolsByPlan(tools []ToolDef, planTools []string) []ToolDef {
@@ -757,19 +935,29 @@ func filterToolsByPlan(tools []ToolDef, planTools []string) []ToolDef {
 		return tools
 	}
 	set := map[string]bool{}
+	hasWildcard := false
 	for _, t := range planTools {
-		set[strings.TrimSpace(t)] = true
+		name := strings.TrimSpace(t)
+		if name == "__all__" {
+			hasWildcard = true
+			continue
+		}
+		set[name] = true
+	}
+	if hasWildcard {
+		return compactTools(tools)
 	}
 	out := make([]ToolDef, 0, len(tools))
 	for _, tool := range tools {
-		if set[tool.Name] || strings.Contains(tool.Name, "skill__") {
+		if set[tool.Name] {
 			out = append(out, tool)
 		}
 	}
 	if len(out) == 0 {
-		return tools
+		log.Printf("[Loop] plan tools %v not found in available tools, returning all tools as fallback", planTools)
+		return compactTools(tools)
 	}
-	return out
+	return compactTools(out)
 }
 
 func isOutputTruncated(output string) bool {
@@ -794,6 +982,15 @@ func (e *AgentEngine) recursiveSplit(ctx context.Context, provider *models.Provi
 		results = append(results, fmt.Sprintf("- %s: %s", sub, subOutput))
 	}
 	return "递归拆分结果：\n" + strings.Join(results, "\n")
+}
+
+func hasToolPrefix(toolNames map[string]bool, name string) bool {
+	for k := range toolNames {
+		if strings.HasPrefix(k, name) || strings.HasPrefix(name, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripEnvironmentDetailsFromPrompt(text string) string {
@@ -852,9 +1049,11 @@ func enforcePromptBudget(systemPrompt *string, tools *[]ToolDef, maxChars int) p
 	return info
 }
 
-func selectRelevantTools(query string, tools []ToolDef, limit int) []ToolDef {
+func (e *AgentEngine) selectRelevantTools(query string, tools []ToolDef, limit int) []ToolDef {
 	if limit <= 0 || len(tools) <= limit {
-		return compactTools(tools)
+		result := compactTools(tools)
+		e.recordToolSelectionFeedback(query, result, tools)
+		return result
 	}
 	queryLower := strings.ToLower(query)
 	type scoredTool struct {
@@ -885,11 +1084,34 @@ func selectRelevantTools(query string, tools []ToolDef, limit int) []ToolDef {
 		}
 		return scored[i].score > scored[j].score
 	})
-	selected := make([]ToolDef, 0, limit)
+	preSelected := make([]ToolDef, 0, limit)
 	for i := 0; i < limit && i < len(scored); i++ {
-		selected = append(selected, scored[i].tool)
+		preSelected = append(preSelected, scored[i].tool)
 	}
-	return compactTools(selected)
+	finalSelected := SemanticMatchToolsForEngine(e, query, preSelected, limit)
+	e.recordToolSelectionFeedback(query, finalSelected, tools)
+	return compactTools(finalSelected)
+}
+
+func (e *AgentEngine) recordToolSelectionFeedback(query string, selected []ToolDef, all []ToolDef) {
+	if e == nil || e.db == nil || len(selected) == 0 {
+		return
+	}
+	names := make([]string, 0, len(selected))
+	for _, t := range selected {
+		names = append(names, t.Name)
+	}
+	content := fmt.Sprintf("query=%s,selected=%s,all_count=%d", truncateStr(query, 100), strings.Join(names, ","), len(all))
+	mem := models.SkillRuntimeMemory{
+		Type:       "tool_selection_feedback",
+		Key:        "tool_feedback_" + models.GenerateID(),
+		Content:    content,
+		Confidence: 0.5,
+		Source:     "runtime",
+		Status:     "pending",
+		LastUsedAt: time.Now(),
+	}
+	e.db.Create(&mem)
 }
 
 func compactTools(tools []ToolDef) []ToolDef {
@@ -1399,46 +1621,26 @@ func detectWriteOperation(sql string) (isWrite bool, opType string) {
 	return false, ""
 }
 
-// formatText2SQLResult 格式化 text2sql 结果（含列名和数据，供 LLM 分析）
+// formatText2SQLResult 格式化 text2sql 结果（仅返回结果数据，不暴露 SQL）
 func formatText2SQLResult(result *ChatResponse) string {
-	var sb strings.Builder
-
 	if result.Data == nil {
 		return result.Message
 	}
 
-	// SQL 语句
-	if sql, ok := result.Data["sql"].(string); ok && sql != "" {
-		sb.WriteString(fmt.Sprintf("[SQL] %s\n", sql))
-	}
-
-	// 列名
-	if columns, ok := result.Data["columns"].([]string); ok && len(columns) > 0 {
-		sb.WriteString(fmt.Sprintf("[列] %s\n", strings.Join(columns, " | ")))
-	}
-
-	// 数据行（最多展示 25 行）
+	var sb strings.Builder
 	if rows, ok := result.Data["rows"].([][]interface{}); ok && len(rows) > 0 {
-		sb.WriteString(fmt.Sprintf("[数据] %d 行:\n", len(rows)))
-		maxShow := 25
-		if len(rows) < maxShow {
-			maxShow = len(rows)
-		}
-		for i := 0; i < maxShow; i++ {
+		for i := 0; i < len(rows); i++ {
 			vals := make([]string, len(rows[i]))
 			for j, v := range rows[i] {
 				vals[j] = fmt.Sprintf("%v", v)
 			}
-			sb.WriteString(fmt.Sprintf("  %s\n", strings.Join(vals, " | ")))
+			sb.WriteString(strings.Join(vals, " | "))
+			if i < len(rows)-1 {
+				sb.WriteString("\n")
+			}
 		}
-		if len(rows) > maxShow {
-			sb.WriteString(fmt.Sprintf("  ...(还有 %d 行未展示)\n", len(rows)-maxShow))
-		}
-	}
-
-	// 统计
-	if rc, ok := result.Data["row_count"].(int); ok {
-		sb.WriteString(fmt.Sprintf("[统计] 共 %d 条记录\n", rc))
+	} else if result.Message != "" {
+		sb.WriteString(result.Message)
 	}
 
 	if sb.Len() == 0 {

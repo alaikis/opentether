@@ -725,6 +725,51 @@ func (s *SkillService) notifyClassifierReload() {
 	}
 }
 
+func (s *SkillService) StartSkillOptimizer() {
+	go func() {
+		s.runSkillOptimizer()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.runSkillOptimizer()
+		}
+	}()
+}
+
+func (s *SkillService) runSkillOptimizer() {
+	s.ValidateContextMDFiles()
+	var skills []models.Skill
+	if err := s.db.Where("enabled = ?", true).Find(&skills).Error; err != nil {
+		return
+	}
+	for _, skill := range skills {
+		_ = s.bootstrapRuntimeCandidates(skill.ID)
+	}
+	s.notifyClassifierReload()
+}
+
+func (s *SkillService) bootstrapRuntimeCandidates(skillID string) error {
+	var skill models.Skill
+	if err := s.db.First(&skill, "id = ?", skillID).Error; err != nil {
+		return err
+	}
+	var runtime []models.SkillRuntimeMemory
+	s.db.Where("skill_id = ? AND source IN ? AND confidence >= ?", skill.ID, []string{"runtime", "confirmed", "bootstrap"}, 0.7).Order("confidence DESC, updated_at DESC").Limit(100).Find(&runtime)
+	for _, mem := range runtime {
+		if mem.Status == "pending" || mem.Source == "admin" {
+			continue
+		}
+		key := "auto_" + mem.Type + "_" + mem.Key
+		var existing models.SkillRuntimeMemory
+		if err := s.db.Where("skill_id = ? AND data_source_id = ? AND type = ? AND key = ?", mem.SkillID, mem.DataSourceID, mem.Type, key).First(&existing).Error; err == nil {
+			continue
+		}
+		candidate := models.SkillRuntimeMemory{SkillID: mem.SkillID, DataSourceID: mem.DataSourceID, Type: mem.Type, Key: key, Content: stripEnvironmentDetails(mem.Content), Confidence: 0.72, Source: "bootstrap", Status: "pending", LastUsedAt: time.Now()}
+		_ = s.db.Create(&candidate).Error
+	}
+	return nil
+}
+
 func (s *SkillService) snapshotConfig(skillID, config, action, actorID, note string) error {
 	if s == nil || s.db == nil || skillID == "" {
 		return nil
@@ -1397,6 +1442,28 @@ func (s *SkillService) SyncVector(id string) error {
 	return nil
 }
 
+func (s *SkillService) ListIntentRules() ([]models.SkillIntentRule, error) {
+	var rules []models.SkillIntentRule
+	err := s.db.Order("priority DESC").Find(&rules).Error
+	return rules, err
+}
+
+func (s *SkillService) CreateIntentRule(rule *models.SkillIntentRule) error {
+	rule.ID = ""
+	return s.db.Create(rule).Error
+}
+
+func (s *SkillService) UpdateIntentRule(rule *models.SkillIntentRule) error {
+	return s.db.Model(&models.SkillIntentRule{}).Where("id = ?", rule.ID).Updates(map[string]interface{}{
+		"intent": rule.Intent, "skill_type": rule.SkillType, "skill_name": rule.SkillName,
+		"priority": rule.Priority, "enabled": rule.Enabled,
+	}).Error
+}
+
+func (s *SkillService) DeleteIntentRule(id string) error {
+	return s.db.Delete(&models.SkillIntentRule{}, "id = ?", id).Error
+}
+
 type TaskService struct {
 	db  *gorm.DB
 	cfg *config.Config
@@ -1788,8 +1855,8 @@ func (s *AgentService) Close() error {
 	return s.engine.Close()
 }
 
-// getEngine 懒初始化并返回复用的 AgentEngine
-func (s *AgentService) getEngine() *agent.AgentEngine {
+// GetEngine 懒初始化并返回复用的 AgentEngine
+func (s *AgentService) GetEngine() *agent.AgentEngine {
 	if s.engine == nil {
 		s.engine = agent.NewAgentEngine(s.db, s.cfg, s.store)
 		if s.sqlAuditor != nil {
@@ -1809,7 +1876,7 @@ func (s *AgentService) SetSQLAuditor(auditor text2sql.AuditRecorder) {
 
 // ReloadFastPathClassifier 强制重载快路径路由分类器，在管理员拒绝 RouteExample 后触发。
 func (s *AgentService) ReloadFastPathClassifier() {
-	eng := s.getEngine()
+	eng := s.GetEngine()
 	if eng != nil {
 		eng.ReloadFastPathClassifier()
 	}
@@ -1894,7 +1961,7 @@ func (s *AgentService) RetryRuntimeJob(userID, jobID string) (map[string]interfa
 		return nil, fmt.Errorf("任务缺少原始输入，无法恢复")
 	}
 
-	engine := s.getEngine()
+	engine := s.GetEngine()
 	ctx, cancel := context.WithTimeout(context.Background(), agent.LoopTimeout)
 	defer cancel()
 
@@ -1962,7 +2029,7 @@ func (s *AgentService) Chat(userID, message, conversationID, skillID string) (ma
 	}
 
 	// 初始化 AgentEngine 并执行 Agentic Loop
-	engine := s.getEngine()
+	engine := s.GetEngine()
 
 	ctx, cancel := context.WithTimeout(context.Background(), agent.LoopTimeout)
 	defer cancel()
@@ -2057,7 +2124,7 @@ func (s *AgentService) ChatStream(userID, message, conversationID, skillID strin
 	s.db.Create(&userMsg)
 
 	// 初始化 Agent Engine 并执行 Agentic Loop
-	engine := s.getEngine()
+	engine := s.GetEngine()
 	var user models.User
 	s.db.Preload("Groups").Where("id = ?", userID).First(&user)
 
@@ -2253,6 +2320,10 @@ func formatLoopEvent(evt agent.LoopEvent) string {
 }
 
 // getOrCreateConversation 获取或创建会话
+func (s *AgentService) GetOrCreateConversation(userID, conversationID string) (*models.Conversation, error) {
+	return s.getOrCreateConversation(userID, conversationID)
+}
+
 func (s *AgentService) getOrCreateConversation(userID, conversationID string) (*models.Conversation, error) {
 	if conversationID != "" {
 		var conv models.Conversation
@@ -2310,6 +2381,22 @@ func (s *AgentService) buildLLMMessages(history []models.Message, currentMessage
 	}
 
 	return messages
+}
+
+func (s *AgentService) MetricsSnapshot() map[string]int64 {
+	eng := s.GetEngine()
+	if eng == nil {
+		return map[string]int64{}
+	}
+	return eng.MetricsSnapshot()
+}
+
+func (s *AgentService) Backtest(query string) *agent.BacktestResult {
+	eng := s.GetEngine()
+	if eng == nil {
+		return &agent.BacktestResult{}
+	}
+	return eng.Backtest(query)
 }
 
 type ConversationService struct {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -39,16 +40,25 @@ type AgentEngine struct {
 	store           storage.Driver
 	sqlAuditor      text2sql.AuditRecorder
 	externalDBPool  *database.ExternalDBPoolManager
-mcpProvider    MCPToolProvider
+	mcpProvider    MCPToolProvider
 	fastClassifier *FastPathClassifier
 	metrics         *Metrics
 	selfLearning    *SelfLearning
+	observer        *SystemObserver
+	feedbackLoop    *FeedbackLoop
+	promptEvolution *PromptEvolution
+	verificationLoop *VerificationLoop
+	taskGraph       *TaskGraph
 	ragService      interface{ BuildContext(string, int) string }
+	skillPlanner    *SkillPlanner
 	fastCacheMu     sync.Mutex
 	fastCache       map[string]fastCacheEntry
 	fastInflight    map[string]chan fastCacheEntry
 	runtimeMemMu    sync.Mutex
 	runtimeMemCache map[string]runtimeMemCacheEntry
+	maxParallelism  int
+	maxRecursionDepth int
+	llmQualityIssues int
 }
 
 type fastCacheEntry struct {
@@ -155,7 +165,32 @@ func NewAgentEngineWithExternalDBPool(db *gorm.DB, cfg *config.Config, store sto
 	if externalDBPool == nil {
 		externalDBPool = database.NewExternalDBPoolManager(db, nil)
 	}
-	return &AgentEngine{
+
+	observerConfig := cfg.Observer
+	if observerConfig == nil {
+		observerConfig = &config.ObserverConfig{
+			Enabled:         true,
+			StatsIntervalSec: 60,
+		}
+	}
+
+	feedbackConfig := cfg.FeedbackLoop
+	if feedbackConfig == nil {
+		feedbackConfig = &config.FeedbackLoopConfig{
+			Enabled:       true,
+			BatchSize:     10,
+			BatchTimeoutMs: 5000,
+		}
+	}
+
+	verifyConfig := cfg.Verification
+	if verifyConfig == nil {
+		verifyConfig = &config.VerificationConfig{
+			Enabled: true,
+		}
+	}
+
+	engine := &AgentEngine{
 		db:              db,
 		config:          cfg,
 		skills:          NewSkillManager(db),
@@ -169,18 +204,51 @@ func NewAgentEngineWithExternalDBPool(db *gorm.DB, cfg *config.Config, store sto
 		fastClassifier:  NewFastPathClassifier(db),
 		metrics:         new(Metrics),
 		selfLearning:    NewSelfLearning(db),
-		fastCache:       make(map[string]fastCacheEntry),
+		observer:        NewSystemObserver(),
+		feedbackLoop:    NewFeedbackLoop(feedbackConfig.BatchSize, time.Duration(feedbackConfig.BatchTimeoutMs)*time.Millisecond),
+		promptEvolution:  NewPromptEvolution(),
+		verificationLoop: NewVerificationLoop(db),
+		taskGraph:       NewTaskGraph(nil),
+		skillPlanner:    NewSkillPlanner(db, NewSkillManager(db)),
+		fastCache:        make(map[string]fastCacheEntry),
 		fastInflight:    make(map[string]chan fastCacheEntry),
 		runtimeMemCache: make(map[string]runtimeMemCacheEntry),
+		maxParallelism:  5,
+		maxRecursionDepth: 3,
 	}
+
+	if observerConfig.Enabled {
+		engine.observer.Start()
+		log.Printf("[Engine] SystemObserver started with interval %ds", observerConfig.StatsIntervalSec)
+	}
+
+	if feedbackConfig.Enabled {
+		engine.feedbackLoop.Start()
+		log.Printf("[Engine] FeedbackLoop started (batch size: %d, timeout: %dms)",
+			feedbackConfig.BatchSize, feedbackConfig.BatchTimeoutMs)
+	}
+
+	return engine
 }
 
 // Close closes resources owned by the engine, including cached external datasource pools.
 func (e *AgentEngine) Close() error {
-	if e == nil || e.externalDBPool == nil {
+	if e == nil {
 		return nil
 	}
-	return e.externalDBPool.CloseAll()
+
+	if e.observer != nil {
+		e.observer.Stop()
+	}
+
+	if e.feedbackLoop != nil {
+		e.feedbackLoop.Stop()
+	}
+
+	if e.externalDBPool != nil {
+		return e.externalDBPool.CloseAll()
+	}
+	return nil
 }
 
 // UpdateConversationMemory updates compressed conversation state and task working memory after a turn.
@@ -354,22 +422,52 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 		return nil, fmt.Errorf("获取 Skill 列表失败: %w", err)
 	}
 
-	// === 两阶段路由 ===
-	// Stage 1: 对所有 Skill 打分
-	candidates := scoreSkills(message, lowerMsg, skills)
+	userSkillHistory := map[string]int{}
+	if e.memory != nil && e.memory.longTerm != nil {
+		memories, memErr := e.memory.longTerm.GetUserMemory(user.UserID, "skill_usage")
+		if memErr == nil {
+			for _, mem := range memories {
+				parts := strings.Split(mem.Key, "_")
+				if len(parts) >= 2 && parts[0] == "skill" {
+					skillType := parts[1]
+					userSkillHistory[skillType] = mem.Priority
+				}
+			}
+		}
+	}
 
-	// 无任何匹配
+	candidates := scoreSkills(message, lowerMsg, skills)
+	for i := range candidates {
+		if boost, ok := userSkillHistory[candidates[i].SkillType]; ok && boost > 0 {
+			weight := 0.05
+			if boost >= 10 {
+				weight = 0.12
+			} else if boost >= 5 {
+				weight = 0.08
+			} else if boost >= 2 {
+				weight = 0.05
+			}
+			candidates[i].Score += weight
+			if candidates[i].Score > 1.0 {
+				candidates[i].Score = 1.0
+			}
+			candidates[i].MatchType = "keyword+history"
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Score > candidates[j].Score
+	})
+
 	if len(candidates) == 0 {
 		return &IntentResult{
-			Intent:     "boundary_reject",
-			Confidence: 0,
+			Intent:     "chat",
+			Confidence: 0.3,
+			Parameters: map[string]interface{}{"skill_name": "skill_chat", "skill_id": "", "match_type": "fallback_chat"},
 		}, nil
 	}
 
-	// 最佳候选
 	best := candidates[0]
 
-	// 高置信：直接路由
 	if best.Score >= 0.7 {
 		return &IntentResult{
 			Intent:     best.SkillType,
@@ -378,7 +476,6 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 		}, nil
 	}
 
-	// 中置信 + 与第二名差距大：自动路由
 	if best.Score >= 0.4 && (len(candidates) < 2 || best.Score-candidates[1].Score > 0.25) {
 		return &IntentResult{
 			Intent:     best.SkillType,
@@ -387,7 +484,6 @@ func (e *AgentEngine) recognizeIntent(message string, user *UserContext) (*Inten
 		}, nil
 	}
 
-	// 低置信或接近：返回候选列表
 	return &IntentResult{
 		Intent:     "needs_disambiguation",
 		Confidence: best.Score,
@@ -494,9 +590,9 @@ func scoreSkills(message, lowerMsg string, skills []models.Skill) []SkillCandida
 			matchType = "keyword"
 		}
 
-		// 归一化：总数 / (总关键词数 + 2)，上限 1.0
+		// 归一化：使用 sqrt 减少对关键词少的 skill 的 bias
 		if score > 0 {
-			normalized := score / float64(totalKW+2)
+			normalized := score / math.Sqrt(float64(totalKW)+1)
 			if normalized > 1.0 {
 				normalized = 1.0
 			}
@@ -512,8 +608,12 @@ func scoreSkills(message, lowerMsg string, skills []models.Skill) []SkillCandida
 	sort.Slice(list, func(i, j int) bool { return list[i].Score > list[j].Score })
 
 	// 最多返回 3 个候选
-	result := make([]SkillCandidate, 0, min(3, len(list)))
-	for i := 0; i < len(list) && i < 3; i++ {
+	maxResults := 3
+	if len(list) < maxResults {
+		maxResults = len(list)
+	}
+	result := make([]SkillCandidate, 0, maxResults)
+	for i := 0; i < maxResults; i++ {
 		result = append(result, list[i].SkillCandidate)
 	}
 	return result
@@ -530,24 +630,8 @@ func (e *AgentEngine) planExecution(intent *IntentResult, user *UserContext) (*P
 		}, nil
 	}
 
-	// 根据意图选择 Skill
-	skillMap := map[string]string{
-		"text2sql":     "skill_text2sql",
-		"chat":         "skill_chat",
-		"file_process": "skill_file_process",
-		"report":       "skill_report",
-		"api_caller":   "skill_api_caller",
-		"employee":     "skill_employee",
-		"pdf":          "skill_pdf",
-		"md2pdf":       "skill_md2pdf",
-		"excel":        "skill_report",
-		"word":         "skill_report",
-		"ppt":          "skill_report",
-	}
-
-	skillName := skillMap[intent.Intent]
+	skillName := e.resolveSkillFromIntent(intent.Intent)
 	if skillName == "" {
-		// 直接从 intent 提取 skill_name
 		if name, ok := intent.Parameters["skill_name"].(string); ok {
 			skillName = name
 		}
@@ -581,6 +665,31 @@ func (e *AgentEngine) planExecution(intent *IntentResult, user *UserContext) (*P
 	}
 
 	return plan, nil
+}
+
+var hardcodedSkillMap = map[string]string{
+	"text2sql":     "skill_text2sql",
+	"chat":         "skill_chat",
+	"file_process": "skill_file_process",
+	"report":       "skill_report",
+	"api_caller":   "skill_api_caller",
+	"employee":     "skill_employee",
+	"pdf":          "skill_pdf",
+	"md2pdf":       "skill_md2pdf",
+	"excel":        "skill_report",
+	"word":         "skill_report",
+	"ppt":          "skill_report",
+}
+
+func (e *AgentEngine) resolveSkillFromIntent(intent string) string {
+	if e == nil || e.db == nil {
+		return hardcodedSkillMap[intent]
+	}
+	var rule models.SkillIntentRule
+	if err := e.db.Where("intent = ? AND enabled = ?", intent, true).Order("priority DESC").First(&rule).Error; err == nil {
+		return rule.SkillType
+	}
+	return hardcodedSkillMap[intent]
 }
 
 // checkPermission 检查权限边界
@@ -2100,6 +2209,77 @@ func extractTopic(query string) string {
 func (e *AgentEngine) fetchRAGContext(query string) string {
 	if e.ragService == nil { return "" }
 	return e.ragService.BuildContext(query, 2000)
+}
+
+func (e *AgentEngine) fallbackOnLLMDegradation(user *UserContext, query, conversationID string) *ChatResponse {
+	var skills []models.Skill
+	if err := e.db.Where("enabled = ?", true).Find(&skills).Error; err != nil {
+		return &ChatResponse{Message: "处理您的请求时遇到问题，请稍后重试。", ConversationID: conversationID, SkillUsed: "fallback"}
+	}
+	for _, skill := range skills {
+		keywords := parseKeywords(skill.Keywords)
+		lowerQuery := strings.ToLower(query)
+		for _, kw := range keywords {
+			if kw != "" && strings.Contains(lowerQuery, strings.ToLower(kw)) {
+				if resp, ok := e.executeSelectedSkillDirect(context.Background(), user, skill.ID, query, conversationID, time.Now()); ok {
+					return resp
+				}
+			}
+		}
+		if strings.Contains(lowerQuery, strings.ToLower(skill.Name)) {
+			if resp, ok := e.executeSelectedSkillDirect(context.Background(), user, skill.ID, query, conversationID, time.Now()); ok {
+				return resp
+			}
+		}
+	}
+	if strings.Contains(strings.ToLower(query), "查询") || strings.Contains(strings.ToLower(query), "数据") {
+		if resp, ok := e.executeSelectedSkillDirect(context.Background(), user, "skill_text2sql", query, conversationID, time.Now()); ok {
+			return resp
+		}
+	}
+	return &ChatResponse{Message: "处理您的请求时遇到问题，请稍后重试。您的问题: " + query, ConversationID: conversationID, SkillUsed: "fallback"}
+}
+
+func (e *AgentEngine) MetricsSnapshot() map[string]int64 {
+	if e == nil || e.metrics == nil {
+		return map[string]int64{}
+	}
+	return e.metrics.Snapshot()
+}
+
+func (e *AgentEngine) GetObserver() *SystemObserver {
+	if e == nil {
+		return nil
+	}
+	return e.observer
+}
+
+func (e *AgentEngine) GetFeedbackLoop() *FeedbackLoop {
+	if e == nil {
+		return nil
+	}
+	return e.feedbackLoop
+}
+
+func (e *AgentEngine) GetPromptEvolution() *PromptEvolution {
+	if e == nil {
+		return nil
+	}
+	return e.promptEvolution
+}
+
+func (e *AgentEngine) GetSkillPlanner() *SkillPlanner {
+	if e == nil {
+		return nil
+	}
+	return e.skillPlanner
+}
+
+func (e *AgentEngine) GetVerificationLoop() *VerificationLoop {
+	if e == nil {
+		return nil
+	}
+	return e.verificationLoop
 }
 
 var _ = json.Marshal // use json

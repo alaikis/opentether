@@ -1,6 +1,9 @@
 package vectorstore
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 // Match 向量匹配结果
 type Match struct {
@@ -15,8 +18,17 @@ type Store interface {
 	// Index 为一个 Skill 建立向量索引
 	Index(skillID, skillName string, vector []float64) error
 
+	// Update 更新已有索引
+	Update(skillID, skillName string, vector []float64) error
+
 	// Search 按余弦相似度搜索 TopK 最相似的 Skill
 	Search(queryVector []float64, topK int, threshold float64) ([]Match, error)
+
+	// HybridSearch 混合搜索（语义 + BM25）
+	HybridSearch(queryVector []float64, topK int, threshold float64, alpha float64) ([]Match, error)
+
+	// SearchWithMetadata 带元数据过滤的搜索
+	SearchWithMetadata(queryVector []float64, topK int, threshold float64, filters map[string]string) ([]Match, error)
 
 	// Remove 删除一个 Skill 的索引
 	Remove(skillID string) error
@@ -70,4 +82,60 @@ func CosineSimilarity(a, b []float64) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// BM25Score 简化版 BM25 评分（词频 + 长度归一化）
+func BM25Score(queryVector, docVector []float64) float64 {
+	if len(queryVector) == 0 || len(docVector) == 0 || len(queryVector) != len(docVector) {
+		return 0
+	}
+	avgLen := 1.0
+	k1 := 1.2
+	b := 0.75
+	docLen := 0.0
+	for _, v := range docVector {
+		docLen += v
+	}
+	if docLen == 0 {
+		return 0
+	}
+	var score float64
+	for i, qv := range queryVector {
+		if qv == 0 {
+			continue
+		}
+		tf := docVector[i]
+		if tf == 0 {
+			continue
+		}
+		score += qv * ((tf * (k1 + 1)) / (tf + k1*(1-b+b*(docLen/avgLen))))
+	}
+	return score
+}
+
+func parseMetadata(s string) map[string]string {
+	m := map[string]string{}
+	if s == "" {
+		return m
+	}
+	parts := strings.Split(s, ";")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) == 2 {
+			m[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+		}
+	}
+	return m
+}
+
+func serializeMetadata(m map[string]string) string {
+	var parts []string
+	for k, v := range m {
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, ";")
 }

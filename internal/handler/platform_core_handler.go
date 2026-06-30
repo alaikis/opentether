@@ -204,3 +204,14 @@ func (h *Handler) ListEvalRuns(c *fiber.Ctx) error {
 	}
 	return c.JSON(rows)
 }
+
+func (h *Handler) AgentBacktest(c *fiber.Ctx) error {
+	query := c.Query("query", "")
+	result := h.services.Agent.Backtest(query)
+	return c.JSON(result)
+}
+
+func (h *Handler) AgentQualityMetrics(c *fiber.Ctx) error {
+	snapshot := h.services.Agent.MetricsSnapshot()
+	return c.JSON(snapshot)
+}

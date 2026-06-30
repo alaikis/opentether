@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alaikis/opentether/internal/llm"
@@ -169,6 +170,7 @@ func (s *AgentTaskService) RunGraph(graphID string) {
 	}
 	for {
 		progress := false
+		var parallelNodes []*models.AgentTaskNode
 		for i := range nodes {
 			node := &nodes[i]
 			if node.Status == "completed" || node.Status == "skipped" {
@@ -178,45 +180,58 @@ func (s *AgentTaskService) RunGraph(graphID string) {
 			if node.Status == "running" || node.Status == "review" {
 				continue
 			}
-			if node.SubgraphID != "" {
-				if s.executeSubgraph(&graph, node, completed) {
-					completed[node.Name] = true
-					progress = true
-				}
+			if !depsCompleted(node.DependsOnJSON, completed) {
 				continue
 			}
-			if !depsCompleted(node.DependsOnJSON, completed) {
+			parallelNodes = append(parallelNodes, node)
+		}
+		if len(parallelNodes) == 0 {
+			break
+		}
+		progress = true
+		var wg sync.WaitGroup
+		for _, node := range parallelNodes {
+			if node.SubgraphID != "" {
+				wg.Add(1)
+				go func(n *models.AgentTaskNode) {
+					defer wg.Done()
+					if s.executeSubgraph(&graph, n, completed) {
+						completed[n.Name] = true
+					}
+				}(node)
 				continue
 			}
 			if !s.evaluateCondition(node, &graph, completed) {
 				s.db.Model(node).Updates(map[string]interface{}{"status": "skipped", "summary": "条件不满足，已跳过"})
 				completed[node.Name] = true
-				progress = true
 				continue
 			}
-			progress = true
-			s.executeNodeWithRetry(&graph, node, &completed)
-			if node.Status == "failed" {
-				var retryCfg map[string]interface{}
-				_ = json.Unmarshal([]byte(node.RetryConfigJSON), &retryCfg)
-				maxRetries := 3
-				if v, ok := retryCfg["max_retries"].(float64); ok {
-					maxRetries = int(v)
+			wg.Add(1)
+			go func(n *models.AgentTaskNode) {
+				defer wg.Done()
+				s.executeNodeWithRetry(&graph, n, &completed)
+				if n.Status == "failed" {
+					var retryCfg map[string]interface{}
+					_ = json.Unmarshal([]byte(n.RetryConfigJSON), &retryCfg)
+					maxRetries := 3
+					if v, ok := retryCfg["max_retries"].(float64); ok {
+						maxRetries = int(v)
+					}
+					if n.RetryCount < maxRetries {
+						backoff := time.Duration(n.RetryCount+1) * 2 * time.Second
+						time.Sleep(backoff)
+						n.RetryCount++
+						n.Status = "pending"
+						s.db.Model(n).Updates(map[string]interface{}{"status": "pending", "retry_count": n.RetryCount, "error": ""})
+						completed[n.Name] = false
+						return
+					}
+					s.db.Model(&graph).Updates(map[string]interface{}{"status": "failed", "error": n.Error})
 				}
-				if node.RetryCount < maxRetries {
-					backoff := time.Duration(node.RetryCount+1) * 2 * time.Second
-					time.Sleep(backoff)
-					node.RetryCount++
-					node.Status = "pending"
-					s.db.Model(node).Updates(map[string]interface{}{"status": "pending", "retry_count": node.RetryCount, "error": ""})
-					progress = false
-					break
-				}
-				s.db.Model(&graph).Updates(map[string]interface{}{"status": "failed", "error": node.Error})
-				return
-			}
-			completed[node.Name] = true
+				completed[n.Name] = true
+			}(node)
 		}
+		wg.Wait()
 		if !progress {
 			break
 		}
@@ -441,4 +456,13 @@ func (s *AgentTaskService) GetGraph(id string) (*models.AgentTaskGraph, []models
 		s.db.Where("node_id IN ?", ids).Order("created_at ASC").Find(&outputs)
 	}
 	return &graph, nodes, outputs, nil
+}
+
+func (s *AgentTaskService) GetNodeHistory(graphID string) ([]models.AgentTaskNode, error) {
+	var nodes []models.AgentTaskNode
+	err := s.db.Where("graph_id = ?", graphID).Order("created_at ASC").Find(&nodes).Error
+	if err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }

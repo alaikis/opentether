@@ -78,7 +78,8 @@
     let input = "";
     let streaming = false;
     let abortCtrl: AbortController | null = null;
-    let messageQueue: string[] = [];
+    let messageQueue: { id: number; content: string }[] = [];
+    let queueId = 0;
     let sidebarOpen = true;
     let convSearch = "";
 
@@ -89,6 +90,7 @@
 
     let messagesEnd: HTMLElement;
     let syncTimer: ReturnType<typeof setInterval> | null = null;
+    let syncSource: EventSource | null = null;
     let lastMessagesSignature = "";
     let loadingConversations = true;
     let loadingMessages = false;
@@ -130,6 +132,7 @@
     onMount(async () => {
         await tick();
         syncTimer = setInterval(syncActiveConversation, 3000);
+        startSSESync();
 
         try {
             await Promise.all([loadConversations(), loadSkills()]);
@@ -149,6 +152,7 @@
 
     onDestroy(() => {
         if (syncTimer) clearInterval(syncTimer);
+        if (syncSource) syncSource.close();
     });
 
     $: if (messages.length) {
@@ -233,11 +237,23 @@
     }
 
     // ── Send / Stream ──────────────────────────────
+    function removeQueueItem(id: number) {
+        messageQueue = messageQueue.filter((q) => q.id !== id);
+    }
+
+    function editQueueItem(id: number) {
+        let item = messageQueue.find((q) => q.id === id);
+        if (item) {
+            input = item.content;
+            removeQueueItem(id);
+        }
+    }
+
     async function handleSend() {
         let content = input.trim();
         if (!content) return;
         if (streaming) {
-            messageQueue = [...messageQueue, content];
+            messageQueue = [...messageQueue, { id: ++queueId, content }];
             input = "";
             toast.info("已排队，当前回复完成后自动发送");
             return;
@@ -293,7 +309,7 @@
                         let data = line.slice(6);
                         if (data === "[DONE]") break;
                         if (firstChunk) {
-                            messages[msgIdx].thinkingCollapsed = true;
+                            messages[msgIdx].thinkingCollapsed = false;
                             firstChunk = false;
                         }
 
@@ -338,9 +354,9 @@
                 activeConvId = conversations[0].id;
             }
             if (messageQueue.length > 0) {
-                let next = messageQueue.shift()!;
+                let nextObj = messageQueue.shift()!;
                 messageQueue = messageQueue;
-                input = next;
+                input = nextObj.content;
                 await tick();
                 handleSend();
             }
@@ -366,6 +382,21 @@
             e.preventDefault();
             handleSend();
         }
+    }
+
+    function startSSESync() {
+        if (!activeConvId) return;
+        const url = `${window.location.origin}/api/v1/user/conversations/${activeConvId}/events`;
+        syncSource = new EventSource(url);
+        syncSource.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                if (data.messages !== messages.length && !streaming) {
+                    syncActiveConversation();
+                }
+            } catch {}
+        };
+        syncSource.onerror = () => { syncSource?.close(); syncSource = null; };
     }
 
     async function syncActiveConversation() {
@@ -456,7 +487,7 @@
     }
 
     function cleanEventContent(content: string) {
-        return content
+        return sanitizeAssistantContent(content)
             .replace(/^\u{1F4AD}\s*正在思考:\s*/u, "")
             .replace(/^\u{1F527}\s*正在调用:\s*/u, "")
             .replace(/^\u26A0\uFE0F\s*/u, "")
@@ -535,8 +566,12 @@
         };
     }
 
+    function sanitizeAssistantContent(text: string): string {
+        return (text || "").replace(/<environment_details>[\s\S]*?<\/environment_details>/g, "").trim();
+    }
+
     function extractMetricResult(text: string): MetricResult | null {
-        const normalized = text.trim().replace(/\s+/g, " ");
+        const normalized = sanitizeAssistantContent(text).trim().replace(/\s+/g, " ");
         const patterns = [
             /(.+?)(?:为|是|共|总计|一共)\s*([\d,]+(?:\.\d+)?)\s*(条|个|笔|单|人|元|万元|%)/,
             /(?:查询完成，)?共找到\s*([\d,]+(?:\.\d+)?)\s*(条|个|笔|单|人)?/,
@@ -590,7 +625,7 @@
     }
     interface TrendChartData {
         title: string;
-        type: "line" | "bar";
+        type: "line" | "bar" | "pie";
         labels: string[];
         series: TrendSeries[];
     }
@@ -618,6 +653,15 @@
 
     function mustTrendChart(text: string): TrendChartData {
         return extractTrendChart(text) as TrendChartData;
+    }
+
+    function pieSlice(cx: number, cy: number, r: number, startAngle: number, endAngle: number): string {
+        const x1 = cx + Math.cos(startAngle) * r;
+        const y1 = cy + Math.sin(startAngle) * r;
+        const x2 = cx + Math.cos(endAngle) * r;
+        const y2 = cy + Math.sin(endAngle) * r;
+        const large = endAngle - startAngle > Math.PI ? 1 : 0;
+        return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
     }
 
     function chartPolyline(values: number[], width = 520, height = 180): string {
@@ -985,7 +1029,7 @@
                                     >
                                 </div>
                                 <pre
-                                    class="text-xs text-slate-700 whitespace-pre-wrap break-words overflow-x-auto font-mono">{msg.content}</pre>
+                                    class="text-xs text-slate-700 whitespace-pre-wrap break-words overflow-x-auto font-mono">{sanitizeAssistantContent(msg.content)}</pre>
                             </div>
                         </div>
                     {:else}
@@ -1103,8 +1147,8 @@
                                     {/if}
 
                                     {#if msg.content}
-                                        {#if extractTrendChart(msg.content)}
-                                            {@const chart = mustTrendChart(msg.content)}
+                                        {#if extractTrendChart(sanitizeAssistantContent(msg.content))}
+                                            {@const chart = mustTrendChart(sanitizeAssistantContent(msg.content))}
                                             <div class="rounded-2xl rounded-bl-md border border-blue-100 bg-white px-4 py-3 shadow-sm max-w-full overflow-hidden">
                                                 <div class="flex items-center justify-between mb-3">
                                                     <div>
@@ -1114,7 +1158,21 @@
                                                 </div>
                                                 <svg viewBox="0 0 520 230" class="w-full h-60 overflow-visible">
                                                     <line x1="0" y1="180" x2="520" y2="180" stroke="#e2e8f0" />
-                                                    {#if chart.type === "bar"}
+                                                    {#if chart.type === "pie"}
+                                                        {@const values = chart.series[0].values}
+                                                        {@const total = values.reduce((a, b) => a + b, 0)}
+                                                        <g transform="translate(260, 100)">
+                                                            {#each values as v, idx}
+                                                                {@const ratio = total > 0 ? v / total : 0}
+                                                                {@const startAngle = idx > 0 ? values.slice(0, idx).reduce((a, b) => a + b, 0) / total * Math.PI * 2 : 0}
+                                                                {@const endAngle = startAngle + ratio * Math.PI * 2}
+                                                                {@const mx = Math.cos((startAngle+endAngle)/2) * 80}
+                                                                {@const my = Math.sin((startAngle+endAngle)/2) * 80}
+                                                                <path d={pieSlice(260,100,70,startAngle,endAngle)} fill={chartColor(idx)} opacity="0.85" stroke="#fff" stroke-width="2"/>
+                                                                <text x={260 + mx * 1.3} y={100 + my * 1.3} text-anchor="middle" class="fill-slate-600 text-[10px]">{chart.labels[idx]}: {ratio.toFixed(1)}%</text>
+                                                            {/each}
+                                                        </g>
+                                                    {:else if chart.type === "bar"}
                                                         {@const max = chartMax(chart)}
                                                         {@const groupW = 520 / chart.labels.length}
                                                         {@const barW = Math.max(8, (groupW - 14) / chart.series.length)}
@@ -1145,10 +1203,10 @@
                                                     {/each}
                                                 </div>
                                             </div>
-                                        {:else if isConciseMetricAnswer(msg.content)}
+                                        {:else if isConciseMetricAnswer(sanitizeAssistantContent(msg.content))}
                                             {@const metric =
                                                 extractMetricResult(
-                                                    msg.content,
+                                                        sanitizeAssistantContent(msg.content),
                                                 )}
                                             <div
                                                 class="rounded-2xl rounded-bl-md border border-primary-100 bg-gradient-to-br from-primary-50 to-white px-4 py-3 shadow-sm max-w-full overflow-hidden"
@@ -1180,7 +1238,7 @@
                                                 <div
                                                     class="mt-3 text-xs text-slate-400"
                                                 >
-                                                    原始回答：{msg.content}
+                                                    原始回答：{sanitizeAssistantContent(msg.content)}
                                                 </div>
                                             </div>
                                         {:else}
@@ -1192,7 +1250,7 @@
                                                     class="prose prose-sm max-w-none min-w-0 prose-p:my-1.5 prose-pre:my-3 prose-code:text-xs prose-table:text-xs"
                                                 >
                                                     {@html renderMarkdown(
-                                                        msg.content,
+                                                    sanitizeAssistantContent(msg.content),
                                                     )}
                                                 </div>
                                                 {#if streaming && i === messages.length - 1}
@@ -1210,7 +1268,7 @@
                                         <div
                                             class="text-sm whitespace-pre-wrap break-words leading-relaxed"
                                         >
-                                            {msg.content}
+{sanitizeAssistantContent(msg.content)}
                                         </div>
                                     </div>
                                 {/if}
@@ -1263,7 +1321,7 @@
                                             class="p-1 rounded hover:bg-slate-100 text-slate-300 hover:text-slate-500 transition-colors"
                                             title="复制"
                                             on:click={() =>
-                                                copyMessage(msg.content)}
+                                                copyMessage(sanitizeAssistantContent(msg.content))}
                                         >
                                             <Copy size={13} />
                                         </button>
@@ -1302,6 +1360,21 @@
             {/if}
             <div bind:this={messagesEnd}></div>
         </div>
+
+        {#if messageQueue.length > 0}
+            <div class="border-t border-slate-200 px-4 py-2 bg-amber-50/50 shrink-0">
+                <div class="max-w-4xl mx-auto space-y-1.5">
+                    <div class="text-xs text-amber-600 font-medium">排队中 ({messageQueue.length})</div>
+                    {#each messageQueue as q}
+                        <div class="flex items-center gap-2 bg-white rounded-lg px-3 py-1.5 border border-amber-200 text-sm">
+                            <span class="flex-1 truncate text-slate-600">{q.content}</span>
+                            <button class="text-xs text-blue-500 hover:underline" on:click={() => editQueueItem(q.id)}>编辑</button>
+                            <button class="text-xs text-red-400 hover:underline" on:click={() => removeQueueItem(q.id)}>删除</button>
+                        </div>
+                    {/each}
+                </div>
+            </div>
+        {/if}
 
         <!-- Input area -->
         <div class="border-t border-slate-200 px-4 py-3 bg-white shrink-0">

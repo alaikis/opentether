@@ -161,6 +161,7 @@ type Provider struct {
 	Model        string    `json:"model" gorm:"type:varchar(100)"`
 	Enabled      bool      `json:"enabled" gorm:"default:true"`
 	Priority     int       `json:"priority" gorm:"default:0"`
+	IsSmallModel bool      `json:"is_small_model" gorm:"default:false"`
 	Config       string    `json:"config" gorm:"type:text"` // JSON config
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -217,6 +218,24 @@ type Skill struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 
 	Invocations []SkillInvocation `json:"invocations" gorm:"foreignKey:SkillID"`
+}
+
+type SkillIntentRule struct {
+	ID         string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Intent     string    `json:"intent" gorm:"type:varchar(50);not null;index"`
+	SkillType  string    `json:"skill_type" gorm:"type:varchar(50);not null"`
+	SkillName  string    `json:"skill_name" gorm:"type:varchar(100)"`
+	Priority   int       `json:"priority" gorm:"default:0"`
+	Enabled    bool      `json:"enabled" gorm:"default:true"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (s *SkillIntentRule) BeforeCreate(tx *gorm.DB) error {
+	if s.ID == "" {
+		s.ID = uuid.New().String()
+	}
+	return nil
 }
 
 func (s *Skill) BeforeCreate(tx *gorm.DB) error {

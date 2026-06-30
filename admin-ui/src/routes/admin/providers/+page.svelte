@@ -22,6 +22,7 @@
         model: string;
         enabled: boolean;
         priority: number;
+        is_small_model: boolean;
         config: string;
         created_at: string;
         updated_at: string;
@@ -42,6 +43,7 @@
     let formApiKey = "";
     let formEnabled = true;
     let formPriority = 0;
+    let formIsSmallModel = false;
     let formModels: ModelConfig[] = [
         {
             name: "",
@@ -91,6 +93,7 @@
         formApiKey = "";
         formEnabled = true;
         formPriority = providers.length;
+        formIsSmallModel = false;
         formModels = [
             {
                 name: "",
@@ -115,8 +118,9 @@
         formType = p.provider_type;
         formApiBase = p.api_base || "";
         formApiKey = "";
-        formEnabled = p.enabled;
-        formPriority = p.priority || 0;
+formEnabled = p.enabled;
+            formPriority = p.priority || 0;
+            formIsSmallModel = (p as any).is_small_model || false;
 
         try {
             const cfg = JSON.parse(p.config || "{}");
@@ -207,6 +211,7 @@
                 model: models[0].name,
                 enabled: formEnabled,
                 priority: formPriority,
+                is_small_model: formIsSmallModel,
                 config,
             };
 
@@ -663,6 +668,10 @@
                             class="rounded"
                         />
                         启用此提供商
+                    </label>
+                    <label class="inline-flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" bind:checked={formIsSmallModel} class="rounded" />
+                        小模型（轻量任务）
                     </label>
                 </div>
             </div>

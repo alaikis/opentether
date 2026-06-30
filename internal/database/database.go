@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/models"
@@ -38,13 +39,25 @@ func Initialize(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	}
 
 	db, err := gorm.Open(dialector, &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	log.Printf("Connected to database: %s", cfg.Type)
+	sqlDB, err := db.DB()
+	if err == nil {
+		if cfg.MaxOpenConns > 0 {
+			sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+		}
+		if cfg.MaxIdleConns > 0 {
+			sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+		}
+		if cfg.ConnMaxLifetime > 0 {
+			sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
+		}
+	}
 	return db, nil
 }
 
@@ -104,6 +117,10 @@ func Migrate(db *gorm.DB) error {
 		&models.WebhookDeliveryLog{},
 		&models.RAGDocument{},
 		&models.RAGChunk{},
+		&models.SystemSetting{},
+		&models.SkillPublishRequest{},
+		&models.BackupRecord{},
+		&models.SkillIntentRule{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)

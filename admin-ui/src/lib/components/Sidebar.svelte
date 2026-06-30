@@ -88,23 +88,16 @@
 </script>
 
 <aside
-    class="fixed left-0 top-0 z-40 h-screen flex flex-col bg-gradient-to-b from-blue-950 via-indigo-950 to-slate-900 text-white transition-all duration-300 {$sidebarCollapsed
+    class="fixed left-0 top-0 z-50 h-screen flex flex-col bg-slate-900 text-slate-300 transition-all duration-300 {$sidebarCollapsed
         ? 'w-16'
-        : 'w-60'}"
+        : 'w-56'}"
 >
-    <!-- Logo -->
-    <div
-        class="flex items-center gap-3 h-16 px-4 border-b border-blue-800/40 shrink-0"
-    >
-        <div
-            class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-sm font-bold shrink-0 shadow-lg shadow-blue-500/20"
-        >
+    <div class="flex items-center gap-3 h-14 px-3 border-b border-slate-700/50 shrink-0">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-white text-sm font-bold shrink-0">
             OT
         </div>
         {#if !$sidebarCollapsed}
-            <span class="font-semibold text-base text-blue-50 truncate"
-                >OpenTether</span
-            >
+            <span class="font-semibold text-sm text-white truncate">OpenTether</span>
         {/if}
     </div>
 
@@ -113,7 +106,7 @@
         {#each groups.groups as group}
             {#if !$sidebarCollapsed}
                 <button
-                    class="flex items-center gap-2 w-full px-2.5 py-2 rounded-lg text-[12px] font-semibold text-blue-300/50 hover:text-blue-200 hover:bg-blue-800/30 transition-colors"
+                    class="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 transition-colors"
                     on:click={() => toggle(group.id)}
                 >
                     <span class="flex-1 text-left uppercase tracking-wider"
@@ -139,8 +132,8 @@
                                 class="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors {active(
                                     item,
                                 )
-                                    ? 'bg-blue-500/20 text-blue-300 font-medium shadow-sm shadow-blue-500/5'
-                                    : 'text-blue-200/50 hover:text-blue-100 hover:bg-blue-800/30'}"
+                                    ? 'bg-emerald-500/20 text-emerald-300 font-medium'
+                                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'}"
                             >
                                 <svelte:component
                                     this={item.icon}
@@ -157,7 +150,7 @@
                     on:mouseenter={() => showPopup(group.id)}
                     on:mouseleave={hidePopup}
                 >
-                    <div class="mx-3 my-3 border-t border-blue-800/30"></div>
+                    <div class="mx-3 my-3 border-t border-slate-700/30 {openGroup === group.id ? 'border-emerald-500/50' : ''}"></div>
                     {#if popupGroup === group.id}
                         <div
                             class="absolute left-14 top-0 z-50 bg-white rounded-xl shadow-xl border border-slate-200 py-2 min-w-[170px]"
@@ -203,8 +196,8 @@
                     class="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors {active(
                         item,
                     )
-                        ? 'bg-blue-500/20 text-blue-300 font-medium'
-                        : 'text-blue-200/50 hover:text-blue-100 hover:bg-blue-800/30'}"
+                        ? 'bg-emerald-500/20 text-emerald-300 font-medium'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'}"
                 >
                     <svelte:component this={item.icon} class="w-5 h-5 shrink-0" />
                     {#if !$sidebarCollapsed}<span class="truncate"
@@ -225,10 +218,10 @@
     </nav>
 
     <!-- 折叠按钮 -->
-    <div class="shrink-0 border-t border-blue-800/40 p-3">
+    <div class="shrink-0 border-t border-slate-700/50 p-3">
         <button
             on:click={() => sidebarCollapsed.toggle()}
-            class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-blue-300/40 hover:text-blue-200 hover:bg-blue-800/30 transition-colors text-xs"
+            class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 transition-colors text-xs"
         >
             <span
                 class="text-sm transition-transform duration-300 {$sidebarCollapsed

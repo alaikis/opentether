@@ -38,7 +38,7 @@ func (e *AgentEngine) executeParallelCalls(ctx context.Context, user *UserContex
 	seen := make(map[string]bool)
 	deferredPermChecks := make([]int, 0) // 记录被拒绝的调用索引，用于跳过
 	for i, call := range calls {
-		if !toolNames[call.ToolName] {
+		if !toolNames[call.ToolName] && !hasToolPrefix(toolNames, call.ToolName) {
 			log.Printf("[Parallel] 拒绝未授权工具: %s", call.ToolName)
 			deferredPermChecks = append(deferredPermChecks, i)
 			continue
@@ -61,6 +61,11 @@ func (e *AgentEngine) executeParallelCalls(ctx context.Context, user *UserContex
 	for i, call := range uniqueCalls {
 		wg.Add(1)
 		go func(idx int, c ParallelCall) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Parallel] goroutine panic: %v", r)
+				}
+			}()
 			defer wg.Done()
 			output, err := e.executeTool(ctx, user, c.ToolName, c.ToolInput)
 			mu.Lock()

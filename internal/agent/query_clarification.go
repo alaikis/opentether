@@ -117,6 +117,22 @@ func SplitMultiPartQuestions(message string) []string {
 			}
 		}
 	}
+	if len(stripped) <= 1 {
+		delimiters := []string{"、", "；", ";", "和", "以及"}
+		for _, delim := range delimiters {
+			if strings.Contains(message, delim) {
+				parts = strings.Split(message, delim)
+				stripped = make([]string, 0, len(parts))
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						stripped = append(stripped, p)
+					}
+				}
+				break
+			}
+		}
+	}
 	return stripped
 }
 

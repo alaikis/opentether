@@ -1,5 +1,9 @@
 package vectorstore
 
+import (
+	"sort"
+)
+
 func init() {
 	RegisterStore("memory", NewMemoryStore)
 }
@@ -13,6 +17,7 @@ type vectorEntry struct {
 	skillID   string
 	skillName string
 	vector    []float64
+	metadata  map[string]string
 }
 
 func NewMemoryStore(config map[string]interface{}) (Store, error) {
@@ -28,8 +33,22 @@ func (m *MemoryStore) Index(skillID, skillName string, vector []float64) error {
 		skillID:   skillID,
 		skillName: skillName,
 		vector:    vector,
+		metadata:  map[string]string{},
 	}
 	return nil
+}
+
+func (m *MemoryStore) Update(skillID, skillName string, vector []float64) error {
+	if existing, ok := m.vectors[skillID]; ok {
+		m.vectors[skillID] = vectorEntry{
+			skillID:   skillID,
+			skillName: skillName,
+			vector:    vector,
+			metadata:  existing.metadata,
+		}
+		return nil
+	}
+	return m.Index(skillID, skillName, vector)
 }
 
 func (m *MemoryStore) Search(queryVector []float64, topK int, threshold float64) ([]Match, error) {
@@ -54,14 +73,101 @@ func (m *MemoryStore) Search(queryVector []float64, topK int, threshold float64)
 		}
 	}
 
-	// 简单降序排序 TopK
-	for i := 0; i < len(candidates); i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].score > candidates[i].score {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	if topK > 0 && len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+
+	result := make([]Match, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.match
+	}
+
+	return result, nil
+}
+
+func (m *MemoryStore) HybridSearch(queryVector []float64, topK int, threshold float64, alpha float64) ([]Match, error) {
+	type candidate struct {
+		match Match
+		score float64
+	}
+
+	var candidates []candidate
+	for _, entry := range m.vectors {
+		semScore := CosineSimilarity(queryVector, entry.vector)
+		bm25Score := BM25Score(queryVector, entry.vector)
+		score := alpha*semScore + (1-alpha)*bm25Score
+		if score >= threshold {
+			candidates = append(candidates, candidate{
+				match: Match{
+					SkillID:   entry.skillID,
+					SkillName: entry.skillName,
+					Score:     score,
+					Vector:    entry.vector,
+				},
+				score: score,
+			})
 		}
 	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	if topK > 0 && len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+
+	result := make([]Match, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.match
+	}
+
+	return result, nil
+}
+
+func (m *MemoryStore) SearchWithMetadata(queryVector []float64, topK int, threshold float64, filters map[string]string) ([]Match, error) {
+	if len(filters) == 0 {
+		return m.Search(queryVector, topK, threshold)
+	}
+
+	type candidate struct {
+		match Match
+		score float64
+	}
+
+	var candidates []candidate
+	for _, entry := range m.vectors {
+		matched := true
+		for k, v := range filters {
+			if entry.metadata[k] != v {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		score := CosineSimilarity(queryVector, entry.vector)
+		if score >= threshold {
+			candidates = append(candidates, candidate{
+				match: Match{
+					SkillID:   entry.skillID,
+					SkillName: entry.skillName,
+					Score:     score,
+					Vector:    entry.vector,
+				},
+				score: score,
+			})
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
 
 	if topK > 0 && len(candidates) > topK {
 		candidates = candidates[:topK]

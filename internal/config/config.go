@@ -8,14 +8,18 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Database  DatabaseConfig  `yaml:"database"`
-	Security  SecurityConfig  `yaml:"security"`
-	Update    UpdateConfig    `yaml:"update"`
-	Executor  ExecutorConfig  `yaml:"executor"`
-	Embedding EmbeddingConfig `yaml:"embedding"`
-	SMTP      SMTPConfig      `yaml:"smtp"`
-	Storage   StorageConfig   `yaml:"storage"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	Security      SecurityConfig      `yaml:"security"`
+	Update        UpdateConfig        `yaml:"update"`
+	Executor      ExecutorConfig      `yaml:"executor"`
+	Embedding     EmbeddingConfig     `yaml:"embedding"`
+	SMTP          SMTPConfig          `yaml:"smtp"`
+	Storage       StorageConfig       `yaml:"storage"`
+	Observer      *ObserverConfig     `yaml:"observer"`
+	FeedbackLoop  *FeedbackLoopConfig `yaml:"feedback_loop"`
+	Prompt        *PromptConfig       `yaml:"prompt"`
+	Verification  *VerificationConfig `yaml:"verification"`
 }
 
 type ServerConfig struct {
@@ -117,7 +121,7 @@ type EmbeddingConfig struct {
 	ModelPath     string `yaml:"model_path"` // 模型文件路径
 	Dimension     int    `yaml:"dimension"`  // 向量维度
 	Provider      string `yaml:"provider"`   // embedding 提供者: tfidf, openai, local
-	StoreProvider string `yaml:"store"`      // vectorstore 提供者: memory, milvus, qdrant
+	StoreProvider string `yaml:"store"`      // vectorstore: memory(默认), sqlite(持久化)
 }
 
 // StorageConfig holds object storage configuration.
@@ -154,6 +158,45 @@ type SMTPConfig struct {
 	FromEmail  string `yaml:"from_email"` // 发件人邮箱
 	FromName   string `yaml:"from_name"`  // 发件人名称
 	ToEmail    string `yaml:"to_email"`   // 收件人邮箱 (用于测试和通知)
+}
+
+// ObserverConfig System Observer 配置
+type ObserverConfig struct {
+	Enabled         bool `yaml:"enabled"`          // 是否启用
+	StatsIntervalSec int `yaml:"stats_interval_sec"` // 统计间隔(秒)
+}
+
+// FeedbackLoopConfig FeedbackLoop 配置
+type FeedbackLoopConfig struct {
+	Enabled       bool `yaml:"enabled"`         // 是否启用
+	BatchSize     int  `yaml:"batch_size"`      // 批处理大小
+	BatchTimeoutMs int `yaml:"batch_timeout_ms"` // 批处理超时(毫秒)
+}
+
+// PromptConfig Prompt 演进配置
+type PromptConfig struct {
+	Enabled         bool    `yaml:"enabled"`           // 是否启用
+	BaseThreshold   float64 `yaml:"base_threshold"`    // 基础阈值
+	ThresholdMin    float64 `yaml:"threshold_min"`     // 最小阈值
+	ThresholdMax    float64 `yaml:"threshold_max"`     // 最大阈值
+	AutoPromote     bool    `yaml:"auto_promote"`      // 是否自动升级
+}
+
+// VerificationConfig 验证循环配置
+type VerificationConfig struct {
+	Enabled       bool `yaml:"enabled"`        // 是否启用
+	AutoVerify    bool `yaml:"auto_verify"`    // 是否自动验证结果
+	MaxRetries    int  `yaml:"max_retries"`    // 最大重试次数
+}
+
+// TelemetryConfig 分布式追踪配置
+type TelemetryConfig struct {
+	Enabled        bool   `yaml:"enabled"`         // 是否启用
+	ServiceName    string `yaml:"service_name"`    // 服务名
+	ExporterType   string `yaml:"exporter_type"`   // exporter: otlp, jaeger, zipkin
+	Endpoint       string `yaml:"endpoint"`        // 导出器端点
+	Insecure       bool   `yaml:"insecure"`        // 是否跳过TLS
+	SampleRatio    float64 `yaml:"sample_ratio"`   // 采样比例 0-1
 }
 
 func Load() *Config {

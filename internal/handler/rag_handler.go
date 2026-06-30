@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -49,6 +50,22 @@ func (h *Handler) RAGRetrieve(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "q 参数不能为空"})
 	}
 	chunks, err := h.services.RAG.Retrieve(query, 5)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(chunks)
+}
+
+func (h *Handler) RAGSearch(c *fiber.Ctx) error {
+	query := c.Query("q")
+	if strings.TrimSpace(query) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "q 参数不能为空"})
+	}
+	limit, _ := strconv.Atoi(c.Query("limit", "5"))
+	if limit <= 0 {
+		limit = 5
+	}
+	chunks, err := h.services.RAG.Retrieve(query, limit)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}

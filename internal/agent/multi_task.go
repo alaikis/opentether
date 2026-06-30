@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/alaikis/opentether/internal/embedding"
+	"github.com/alaikis/opentether/internal/llm"
 	"github.com/alaikis/opentether/internal/models"
 )
 
@@ -66,11 +69,99 @@ func BuildMultiTaskPlan(message string) *MultiTaskPlan {
 	return &MultiTaskPlan{Original: message, SubTasks: tasks, TotalSteps: len(tasks)}
 }
 
+func isTrendMessage(message string) bool {
+	lower := strings.ToLower(message)
+	trendKeywords := []string{"趋势", "每月", "按月", "月份", "月度", "折线图", "柱状图", "变化图", "趋势图"}
+	for _, kw := range trendKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *AgentEngine) BuildMultiTaskPlanWithLLM(ctx context.Context, message string) *MultiTaskPlan {
+	parts := SplitMultiPartQuestions(message)
+	if len(parts) <= 1 {
+		return nil
+	}
+	if isTrendMessage(message) {
+		return nil
+	}
+	if e != nil && e.providers != nil {
+		if provider, err := e.providers.GetActiveProvider(); err == nil && provider != nil {
+			client, err := llm.NewClient(provider)
+			if err == nil {
+				prompt := fmt.Sprintf(`将用户的多部分问题拆分为独立的子任务。只返回 JSON 数组，不要解释。
+用户问题: %s
+已初步拆分为: %v
+输出格式: [{"query":"子任务1","depends_on":[]},{"query":"子任务2","depends_on":[0]}]`, message, parts)
+				resp, err := llm.ChatCompletionWithRetry(client, ctx, llm.ChatRequest{
+					Model:          provider.Model,
+					Messages:       []llm.Message{{Role: "user", Content: prompt}},
+					MaxTokens:      1024,
+					Temperature:    0.1,
+					ResponseFormat: &llm.ResponseFormat{Type: "json_object"},
+				}, 2)
+				if err == nil && resp != nil && strings.TrimSpace(resp.Content) != "" {
+					var llmParts []struct {
+						Query     string `json:"query"`
+						DependsOn []int  `json:"depends_on"`
+					}
+					if json.Unmarshal([]byte(resp.Content), &llmParts) == nil && len(llmParts) >= 2 {
+						tasks := make([]SubTask, 0, len(llmParts))
+						for i, p := range llmParts {
+							if strings.TrimSpace(p.Query) == "" {
+								continue
+							}
+							tasks = append(tasks, SubTask{Index: i, Parent: -1, Depth: 0, Label: ExtractTaskLabel(p.Query), Query: p.Query, Status: "pending", Dependencies: p.DependsOn})
+						}
+						if len(tasks) >= 2 {
+							plan := &MultiTaskPlan{Original: message, SubTasks: tasks, IsTree: false}
+							plan.TotalSteps = len(tasks)
+							return plan
+						}
+					}
+				}
+			}
+		}
+	}
+	return BuildMultiTaskPlan(message)
+}
+
 func detectTaskTree(message string, parts []string) []SubTask {
 	if len(parts) < 2 {
 		return nil
 	}
-	return nil
+	lowerMsg := strings.ToLower(message)
+	sequentialKeywords := []string{"然后", "接着", "之后", "再", "然后分析", "然后统计"}
+	parallelKeywords := []string{"同时", "分别", "各自", "以及"}
+	hasSequential := false
+	hasParallel := false
+	for _, kw := range sequentialKeywords {
+		if strings.Contains(lowerMsg, kw) {
+			hasSequential = true
+			break
+		}
+	}
+	for _, kw := range parallelKeywords {
+		if strings.Contains(lowerMsg, kw) {
+			hasParallel = true
+			break
+		}
+	}
+	if !hasSequential && !hasParallel {
+		return nil
+	}
+	tasks := make([]SubTask, 0, len(parts))
+	for i, part := range parts {
+		deps := []int{}
+		if hasSequential && !hasParallel && i > 0 {
+			deps = []int{i - 1}
+		}
+		tasks = append(tasks, SubTask{Index: i, Parent: -1, Depth: 0, Label: ExtractTaskLabel(part), Query: part, Status: "pending", Dependencies: deps})
+	}
+	return tasks
 }
 
 func countTreeTasks(tasks []SubTask) int {
@@ -86,6 +177,11 @@ func (e *AgentEngine) ExecuteMultiTaskPlan(ctx context.Context, user *UserContex
 		return nil, nil
 	}
 	total := plan.TotalSteps
+	maxParallel := e.maxParallelism
+	if maxParallel <= 0 {
+		maxParallel = 5
+	}
+	sem := make(chan struct{}, maxParallel)
 	if plan.IsTree {
 		return e.executeTaskTree(ctx, user, plan, conv, progressFn)
 	}
@@ -107,15 +203,23 @@ func (e *AgentEngine) ExecuteMultiTaskPlan(ctx context.Context, user *UserContex
 	allDone := false
 	for !allDone {
 		allDone = true
+		running := 0
 		for i := 0; i < total; i++ {
 			task := &plan.SubTasks[i]
 			if task.Status != "pending" || !ready(task.Dependencies) {
 				allDone = false
 				continue
 			}
+			if running >= maxParallel {
+				allDone = false
+				break
+			}
+			running++
 			wg.Add(1)
 			go func(t *SubTask) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				t.Status = "running"
 				if progressFn != nil {
 					progressFn(t.Index, total, t.Label, "running")
@@ -134,7 +238,9 @@ func (e *AgentEngine) ExecuteMultiTaskPlan(ctx context.Context, user *UserContex
 					t.SkillUsed = resp.SkillUsed
 					t.Data = resp.Data
 					results[t.Index] = fmt.Sprintf("✅ [%s] %s", t.Label, resp.Message)
-					e.dispatchNestedTasks(ctx, user, t, plan, conv, progressFn)
+					if e.validateSubTaskQuality(t.Query, plan.Original) {
+						e.dispatchNestedTasks(ctx, user, t, plan, conv, progressFn)
+					}
 				}
 				if progressFn != nil {
 					progressFn(t.Index, total, t.Label, t.Status)
@@ -200,7 +306,7 @@ func (e *AgentEngine) dispatchNestedTasks(ctx context.Context, user *UserContext
 		return
 	}
 	items := extractListItems(parent.Result)
-	if len(items) <= 1 || len(items) > 10 {
+	if len(items) <= 1 || len(items) > 5 {
 		return
 	}
 	contextWords := extractContextWords(parent.Query)
@@ -209,7 +315,7 @@ func (e *AgentEngine) dispatchNestedTasks(ctx context.Context, user *UserContext
 		if item == "" || len(item) > 30 {
 			continue
 		}
-		nestedQuery := fmt.Sprintf("%s%s%s", strings.Join(contextWords, ""), item, extractMetricFromQuery(parent.Query))
+		nestedQuery := fmt.Sprintf("%s%s%s", strings.Join(contextWords, ""), item, strings.Join(extractMetricFromQuery(parent.Query), ""))
 		child := SubTask{
 			Index: len(plan.SubTasks), Parent: parent.Index, Depth: parent.Depth + 1,
 			Label: "子任务: " + item, Query: nestedQuery, Status: "running",
@@ -255,11 +361,39 @@ func extractListItems(result string) []string {
 }
 
 func extractContextWords(query string) []string {
-	return nil
+	words := []string{}
+	categories := []string{"北京", "上海", "广州", "深圳", "杭州", "成都", "武汉", "西安", "南京", "重庆",
+		"电子产品", "服装", "食品", "家居", "美妆", "母婴", "运动", "图书", "汽车", "医药",
+		"线上", "线下", "门店", "电商", "批发", "零售", "部门", "团队", "区域", "分公司"}
+	for _, cat := range categories {
+		if strings.Contains(query, cat) {
+			words = append(words, cat)
+		}
+	}
+	if len(words) == 0 {
+		fields := strings.Fields(query)
+		for _, f := range fields {
+			runes := []rune(f)
+			if len(runes) >= 2 && len(runes) <= 8 {
+				words = append(words, f)
+			}
+		}
+	}
+	return words
 }
 
-func extractMetricFromQuery(query string) string {
-	return ""
+func extractMetricFromQuery(query string) []string {
+	metrics := []string{"销售额", "销量", "订单量", "利润", "成本", "收入", "增长", "趋势", "占比", "排名", "用户数", "访问量", "转化率", "客单价", "复购率"}
+	found := []string{}
+	for _, m := range metrics {
+		if strings.Contains(query, m) {
+			found = append(found, m)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return found
 }
 
 func splitKV(line string) (string, string, bool) {
@@ -370,11 +504,19 @@ func buildMultiTaskSummary(plan *MultiTaskPlan, results []string) string {
 	sb := strings.Builder{}
 	sb.WriteString("📋 多任务分析完成 (" + fmt.Sprintf("%d/%d", completedCount(plan), plan.TotalSteps) + ")\n\n")
 	for i, t := range plan.SubTasks {
+		indent := strings.Repeat("  ", t.Depth)
 		if i < len(results) && results[i] != "" {
-			indent := strings.Repeat("  ", t.Depth)
-			sb.WriteString(indent + results[i])
+			skillInfo := ""
+			if t.SkillUsed != "" {
+				skillInfo = fmt.Sprintf(" [Skill: %s]", t.SkillUsed)
+			}
+			sb.WriteString(indent + results[i] + skillInfo)
 		} else {
-			sb.WriteString(fmt.Sprintf("⬜ [%s] %s", t.Label, t.Status))
+			skillInfo := ""
+			if t.SkillUsed != "" {
+				skillInfo = fmt.Sprintf(" [Skill: %s]", t.SkillUsed)
+			}
+			sb.WriteString(fmt.Sprintf("%s⬜ [%s] %s%s", indent, t.Label, t.Status, skillInfo))
 		}
 		sb.WriteString("\n")
 	}
@@ -430,4 +572,24 @@ func extractNumberFromResult(result string) string {
 		}
 	}
 	return result
+}
+
+func (e *AgentEngine) validateSubTaskQuality(subQuery, originalQuery string) bool {
+	if e == nil || e.db == nil {
+		return true
+	}
+	emb, err := embedding.Create("", nil)
+	if err != nil {
+		return true
+	}
+	subVec, err := emb.Embed(strings.ToLower(subQuery))
+	if err != nil {
+		return true
+	}
+	origVec, err := emb.Embed(strings.ToLower(originalQuery))
+	if err != nil {
+		return true
+	}
+	score := cosineSimilarity(subVec, origVec)
+	return score >= 0.3
 }
