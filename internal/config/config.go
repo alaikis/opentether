@@ -21,11 +21,17 @@ type Config struct {
 	Prompt        *PromptConfig       `yaml:"prompt"`
 	Verification  *VerificationConfig `yaml:"verification"`
 	Agent         *AgentConfig        `yaml:"agent"`
+	BossMode      *BossModeConfig     `yaml:"boss_mode"`
 }
 
 type AgentConfig struct {
-	IntentThresholdHigh float64 `yaml:"intent_threshold_high"`
-	IntentThresholdLow  float64 `yaml:"intent_threshold_low"`
+	IntentThresholdHigh float64  `yaml:"intent_threshold_high"`
+	IntentThresholdLow  float64  `yaml:"intent_threshold_low"`
+	BypassGroups        []string `yaml:"bypass_groups"`
+}
+
+type BossModeConfig struct {
+	AllowedBypassGroups []string `yaml:"allowed_bypass_groups"`
 }
 
 type ServerConfig struct {

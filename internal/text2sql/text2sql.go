@@ -114,10 +114,12 @@ type QueryRequest struct {
 	Question              string
 	RawSQL                string
 	DataSourceID          string
+	DataSourceIDs         []string             // 多数据源联邦查询
 	SchemaContext         string                 // Optional schema context
 	UserID                string                 // 用户 ID（审计用）
 	SkillID               string                 // Skill ID（审计用）
 	IsAdmin               bool                   // 是否为管理员（管理员自动通过审批）
+	IsBossMode            bool                   // 是否为 boss mode 用户（跳过 SQL 审计）
 	AllowedOps            []string               // 允许的 SQL 操作前缀（为空时默认只读）
 	DataBoundaryRules     []DataBoundaryRule     // 数据边界规则（用户组/用户级别的字段映射）
 	UserContext           map[string]interface{} // 用户上下文字段值（如 global_user_id, company_user_id 等）
@@ -159,11 +161,38 @@ func (t *Text2SQL) GenerateSQL(ctx context.Context, req *QueryRequest) (*QueryRe
 		return result, err
 	}
 
-	// Get datasource schema
-	schema, err := t.GetDataSourceSchema(req.DataSourceID)
-	if err != nil {
-		result.Error = fmt.Sprintf("获取数据源失败: %v", err)
-		return result, err
+	// 获取数据源 schema - 支持多数据源联邦查询
+	var schema string
+	dsIDs := req.DataSourceIDs
+	if len(dsIDs) == 0 && req.DataSourceID != "" {
+		dsIDs = []string{req.DataSourceID}
+	}
+
+	if len(dsIDs) > 0 {
+		var schemas []string
+		for _, dsID := range dsIDs {
+			// 联邦查询授权检查：验证数据源存在且启用
+			var ds models.DataSource
+			if err := t.db.Where("id = ?", dsID).First(&ds).Error; err != nil {
+				result.Error = fmt.Sprintf("数据源 %s 不存在或无权访问", dsID)
+				return result, fmt.Errorf("数据源 %s 不存在或无权访问: %w", dsID, err)
+			}
+			if !ds.Enabled {
+				result.Error = fmt.Sprintf("数据源 %s 已禁用", dsID)
+				return result, fmt.Errorf("数据源 %s 已禁用", dsID)
+			}
+
+			s, err := t.GetDataSourceSchema(dsID)
+			if err != nil {
+				result.Error = fmt.Sprintf("获取数据源 %s 失败: %v", dsID, err)
+				return result, err
+			}
+			schemas = append(schemas, fmt.Sprintf("## 数据源: %s (%s)\n%s", ds.Name, ds.SourceType, s))
+		}
+		schema = strings.Join(schemas, "\n\n")
+	} else {
+		result.Error = "未指定数据源"
+		return result, fmt.Errorf("未指定数据源")
 	}
 
 	if strings.TrimSpace(req.SchemaContext) != "" {
@@ -258,12 +287,12 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 
 	// ====== SQL 审计拦截 ======
 	if t.auditSvc != nil && req.UserID != "" {
-		// 管理员自动通过
-		if req.IsAdmin {
+		// 管理员或 boss mode 自动通过
+		if req.IsAdmin || req.IsBossMode {
 			auditID, _ := t.auditSvc.RecordSQL(req.UserID, req.SkillID, req.Question, result.SQL, req.DataSourceID, "auto_approved")
 			_ = t.auditSvc.MarkExecuted(auditID, 0, "")
 		} else {
-			// 非管理员：记录 pending，返回等待审批
+			// 非管理员且非 boss mode：记录 pending，返回等待审批
 			auditID, auditErr := t.auditSvc.RecordSQL(req.UserID, req.SkillID, req.Question, result.SQL, req.DataSourceID, "pending")
 			if auditErr == nil {
 				result.Error = fmt.Sprintf("[审计 #%s] 您的 SQL 查询已提交审批，请等待管理员审批通过后再重试。", auditID)
@@ -272,8 +301,8 @@ func (t *Text2SQL) ExecuteSQL(ctx context.Context, req *QueryRequest) (*QueryRes
 			}
 		}
 	} else if req.UserID != "" {
-		// 审计服务未就绪：非管理员禁止执行
-		if !req.IsAdmin {
+		// 审计服务未就绪：非管理员且非 boss mode 禁止执行
+		if !req.IsAdmin && !req.IsBossMode {
 			result.Error = "SQL 审计服务未就绪，请联系管理员。"
 			result.SQL = ""
 			return result, nil

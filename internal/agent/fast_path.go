@@ -470,7 +470,9 @@ func (e *AgentEngine) executeRenderedSQLTemplate(ctx context.Context, user *User
 	if e.sqlAuditor != nil {
 		t2s.SetAuditService(e.sqlAuditor)
 	}
-	result, err := t2s.ExecuteSQL(ctx, &text2sql.QueryRequest{Question: message, RawSQL: sqlText, DataSourceID: dataSourceID, UserID: user.UserID})
+	req := &text2sql.QueryRequest{Question: message, RawSQL: sqlText, DataSourceID: dataSourceID, UserID: user.UserID}
+	e.applyBossMode(req, user)
+	result, err := t2s.ExecuteSQL(ctx, req)
 	if err != nil || result == nil || result.Error != "" {
 		return nil, false
 	}

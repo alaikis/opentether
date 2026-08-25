@@ -3,16 +3,47 @@ package service
 import (
 	"time"
 
+	"github.com/alaikis/opentether/internal/config"
 	"github.com/alaikis/opentether/internal/models"
 	"gorm.io/gorm"
 )
 
 type SQLAuditService struct {
-	db *gorm.DB
+	db  *gorm.DB
+	cfg *config.Config
 }
 
-func NewSQLAuditService(db *gorm.DB) *SQLAuditService {
-	return &SQLAuditService{db: db}
+func NewSQLAuditService(db *gorm.DB, cfg *config.Config) *SQLAuditService {
+	return &SQLAuditService{db: db, cfg: cfg}
+}
+
+func (s *SQLAuditService) IsBossModeEnabled() bool {
+	if s.cfg == nil || s.cfg.BossMode == nil || len(s.cfg.BossMode.AllowedBypassGroups) == 0 {
+		return false
+	}
+	return true
+}
+
+func (s *SQLAuditService) IsBypassGroup(group string) bool {
+	if !s.IsBossModeEnabled() {
+		return false
+	}
+	for _, g := range s.cfg.BossMode.AllowedBypassGroups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *SQLAuditService) ShouldBypass(userID, userGroup string, isAdmin bool) bool {
+	if isAdmin {
+		return true
+	}
+	if userGroup != "" && s.IsBypassGroup(userGroup) {
+		return true
+	}
+	return false
 }
 
 // RecordSQL 实现 text2sql.AuditRecorder 接口

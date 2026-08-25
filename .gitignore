@@ -47,3 +47,5 @@ certs/
 # Models (downloaded)
 models/embedding/*
 !models/embedding/.gitkeep
+
+.worktrees/

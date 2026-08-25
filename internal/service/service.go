@@ -18,6 +18,7 @@ type Services struct {
 	Log          *LogService
 	Agent        *AgentService
 	Conversation *ConversationService
+	AutoSkill    *AutoSkillService
 	// 新增服务
 	ApiKey        *ApiKeyService            // API 密钥管理
 	SkillMarkdown *SkillFromMarkdownService // MD 文件解析生成 Skill
@@ -86,11 +87,12 @@ func NewServices(db *gorm.DB, cfg *config.Config, store storage.Driver) *Service
 		// 新增服务初始化
 		ApiKey:        NewApiKeyService(db),
 		SkillMarkdown: NewSkillFromMarkdownService(db),
+		AutoSkill:     NewAutoSkillService(db, skillSvc, NewSkillFromMarkdownService(db)),
 		MCP:           mcp,
 		PDF:           NewPDFService(),
 		MarkdownPDF:   NewMarkdownPDFService(),
 		Experience:    NewExperienceService(db, cfg),
-		SQLAudit:      NewSQLAuditService(db),
+		SQLAudit:      NewSQLAuditService(db, cfg),
 		Soul:          NewSoulService(db, store),
 		Storage:       store,
 		Readiness:     NewReadinessService(db, cfg, store),

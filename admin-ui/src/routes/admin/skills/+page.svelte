@@ -124,6 +124,12 @@
     let userGroups: UserGroup[] = [];
     let users: UserOption[] = [];
 
+    let currentPage = 1;
+    let pageSize = 20;
+    let totalSkills = 0;
+    let totalPages = 1;
+    let allSkills: Skill[] = [];
+
     const typeOptions = [
         { value: "chat", label: "通用对话", needsDS: false },
         { value: "text2sql", label: "Text2SQL", needsDS: true },
@@ -158,13 +164,42 @@
     async function loadSkills() {
         loading = true;
         try {
-            const data = await api.get<Skill[]>("/admin/skills");
-            skills = Array.isArray(data) ? data : [];
+            const data = await api.get<any>("/admin/skills", {
+                page: String(currentPage),
+                limit: String(pageSize),
+            });
+            const items = (data.items || data) as Skill[];
+            allSkills = Array.isArray(items) ? items : [];
+            totalSkills = typeof data.total === "number" ? data.total : allSkills.length;
+            totalPages = typeof data.last_page === "number" ? data.last_page : Math.max(1, Math.ceil(totalSkills / pageSize));
+            applyFilteredSkills();
         } catch (e: any) {
             error = e.message;
         } finally {
             loading = false;
         }
+    }
+    function applyFilteredSkills() {
+        const q = (searchQuery || "").trim().toLowerCase();
+        if (!q) {
+            skills = allSkills;
+        } else {
+            skills = allSkills.filter(
+                (s) =>
+                    s.name.toLowerCase().includes(q) ||
+                    (s.description || "").toLowerCase().includes(q) ||
+                    (s.category || "").toLowerCase().includes(q),
+            );
+        }
+    }
+    function handleSearch() {
+        currentPage = 1;
+        applyFilteredSkills();
+    }
+    function goToPage(p: number) {
+        if (p < 1 || p > totalPages) return;
+        currentPage = p;
+        loadSkills();
     }
     async function loadUsersAndGroups() {
         try {

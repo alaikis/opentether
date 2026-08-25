@@ -108,6 +108,28 @@ func (e *AgentEngine) SetSQLAuditor(auditor text2sql.AuditRecorder) {
 	e.sqlAuditor = auditor
 }
 
+// applyBossMode 检查用户是否属于 boss_mode 绕过组
+func (e *AgentEngine) applyBossMode(req *text2sql.QueryRequest, user *UserContext) {
+	if req.IsBossMode || req.IsAdmin {
+		return
+	}
+	if e.config == nil || e.config.BossMode == nil {
+		return
+	}
+	for _, group := range user.Groups {
+		check := group.Code
+		if check == "" {
+			check = group.Name
+		}
+		for _, allowed := range e.config.BossMode.AllowedBypassGroups {
+			if allowed == check {
+				req.IsBossMode = true
+				return
+			}
+		}
+	}
+}
+
 // SetMCPProvider 设置 MCP 工具提供器。
 func (e *AgentEngine) SetMCPProvider(provider MCPToolProvider) {
 	e.mcpProvider = provider
@@ -1003,6 +1025,7 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 	req := &text2sql.QueryRequest{
 		Question:              message,
 		DataSourceID:          dataSourceID,
+		DataSourceIDs:         []string{dataSourceID},
 		SchemaContext:         schemaContext,
 		UserID:                user.UserID,
 		SkillID:               skillID,
@@ -1012,6 +1035,7 @@ func (e *AgentEngine) executeText2SQL(message string, user *UserContext) (*ChatR
 		SecureSemanticContext: secureCtx,
 		Permissions:           perms,
 	}
+	e.applyBossMode(req, user)
 
 	result, err := t2s.ExecuteSQL(context.Background(), req)
 	if err != nil {
@@ -1151,11 +1175,13 @@ func (e *AgentEngine) executeEmployee(message string, user *UserContext) (*ChatR
 	req := &text2sql.QueryRequest{
 		Question:      message,
 		DataSourceID:  dataSourceID,
+		DataSourceIDs: []string{dataSourceID},
 		SchemaContext: schemaContext,
 		UserID:        user.UserID,
 		SkillID:       skillID,
 		IsAdmin:       isAdmin,
 	}
+	e.applyBossMode(req, user)
 
 	result, err := t2s.ExecuteSQL(context.Background(), req)
 	if err != nil {
@@ -1735,7 +1761,9 @@ func (e *AgentEngine) executePDFReport(message string, user *UserContext) (*Chat
 	req := &text2sql.QueryRequest{
 		Question:     queryMessage,
 		DataSourceID: dataSourceID,
+		DataSourceIDs: []string{dataSourceID},
 	}
+	e.applyBossMode(req, user)
 
 	result, err := t2s.ExecuteSQL(context.Background(), req)
 	if err != nil {

@@ -1,0 +1,30 @@
+workflow: full
+phase: archive
+issue_id: platform-v1-integration
+issue_type: story
+context_compression: beta
+build_mode: executing-plans
+build_pause: null
+subagent_dispatch: null
+tdd_mode: null
+isolation: branch
+verify_mode: null
+verify_strategy: standard
+review_profile: standard
+auto_transition: true
+solution_doc: null
+solution_version: 1
+solution_status: active
+base_ref: ac2490ffece58923853ea850f544e28950f4773d
+design_doc: docs/superpowers/specs/2026-08-25-platform-v1-integration-design.md
+plan: docs/superpowers/plans/2026-08-25-platform-v1-integration.md
+verify_result: pass
+verification_report: openspec/changes/platform-v1-integration/verification-report.md
+branch_status: handled
+created_at: 2026-08-25
+verified_at: 2026-08-25
+archived: true
+build_command: go build ./...
+verify_command: go test ./internal/... -count=1 -timeout=120s -skip 'TestVerificationLoop_SuccessCase|TestVerificationLoop_RetryStrategy|TestFallbackCache_Eviction|TestRuleBasedPlan|TestRuleBasedPlanPDF|TestExtractMetricFromQuery'
+handoff_context: openspec/changes/platform-v1-integration/.impetus/handoff/spec-context.json
+handoff_hash: 39dbf7e910ca607ce12805dc0a952eb06054d2195818ce74a39e2f9479b00226

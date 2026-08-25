@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/smtp"
 	"strconv"
@@ -450,6 +451,16 @@ func (h *Handler) CreateDataSource(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	if h.services.AutoSkill != nil {
+		skill, genErr := h.services.AutoSkill.GenerateDefaultSkill(result.ID)
+		if genErr != nil {
+			log.Printf("[AutoSkill] Failed to generate skill for datasource %s: %v", result.ID, genErr)
+		} else {
+			log.Printf("[AutoSkill] Generated skill %s for datasource %s", skill.ID, result.ID)
+		}
+	}
+
 	return c.JSON(result)
 }
 

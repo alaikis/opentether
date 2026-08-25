@@ -1,0 +1,15 @@
+{
+  "change": "platform-v1-integration",
+  "phase": "design",
+  "issue_id": "platform-v1-integration",
+  "mode": "beta",
+  "context_compression": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "impetus-handoff.sh",
+  "context_hash": "39dbf7e910ca607ce12805dc0a952eb06054d2195818ce74a39e2f9479b00226",
+  "files": [
+    { "path": "openspec/changes/platform-v1-integration/proposal.md", "role": "proposal", "sha256": "e500b876e44aba87a775bbea1dffa15ad50a20576e5a5aeed5c996338dd6f240", "lines": 116 },
+    { "path": "openspec/changes/platform-v1-integration/design.md", "role": "open-design-notes", "sha256": "b4a1a72e8275db526cc990e2f9322086cf92cc7b5ec4a7d9e24e6612c10ad660", "lines": 122 },
+    { "path": "openspec/changes/platform-v1-integration/tasks.md", "role": "tasks", "sha256": "4772f10d3146bbe3e83135c39665bc0985b42328631821b8718bcee193eeed3e", "lines": 47 }
+  ]
+}

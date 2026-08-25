@@ -125,3 +125,8 @@ features:
   text2sql: true
   report_generation: true
   file_processing: true
+
+# Boss Mode Configuration
+# 允许特定用户组跳过 SQL 审计，直接执行查询
+boss_mode:
+  allowed_bypass_groups: [] # 例如: ["executives", "admin"]
